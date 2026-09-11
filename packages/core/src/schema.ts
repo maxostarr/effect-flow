@@ -10,6 +10,8 @@ export const Message = Schema.Struct({
   body: Schema.Unknown,
 });
 
+export const Invocations = Schema.Literals(["concurrent", "serialized"]);
+
 export const Node = Schema.Struct({
   id: Schema.NonEmptyString,
   type: Schema.NonEmptyString,
@@ -18,6 +20,7 @@ export const Node = Schema.Struct({
     y: Schema.Number,
   }),
   config: Schema.Unknown,
+  invocations: Schema.optionalKey(Invocations),
 });
 
 export interface NodeSchema {
@@ -28,6 +31,7 @@ export interface NodeSchema {
     readonly y: number;
   };
   readonly config: unknown;
+  readonly invocations?: "concurrent" | "serialized" | undefined;
 }
 
 export const Wire = Schema.Struct({

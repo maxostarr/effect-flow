@@ -13,6 +13,7 @@ export interface NodeContext<Config = unknown> {
 export interface NodeDeclaration<Config = any> {
   readonly type: string;
   readonly config: Schema.ConstraintDecoder<Config>;
+  readonly invocations?: "concurrent" | "serialized" | undefined;
   readonly execute: (ctx: NodeContext<Config>) => Effect.Effect<unknown, never, never>;
 }
 
