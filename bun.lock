@@ -19,8 +19,13 @@
         "typescript": "^7.0.2",
       },
     },
+    "packages/core": {
+      "name": "@effect-flow/core",
+    },
   },
   "packages": {
+    "@effect-flow/core": ["@effect-flow/core@workspace:packages/core"],
+
     "@effect/tsgo": ["@effect/tsgo@0.45.0", "", { "optionalDependencies": { "@effect/tsgo-darwin-arm64": "0.45.0", "@effect/tsgo-darwin-x64": "0.45.0", "@effect/tsgo-linux-arm": "0.45.0", "@effect/tsgo-linux-arm64": "0.45.0", "@effect/tsgo-linux-x64": "0.45.0", "@effect/tsgo-win32-arm64": "0.45.0", "@effect/tsgo-win32-x64": "0.45.0" }, "bin": { "effect-tsgo": "dist/effect-tsgo.cjs" } }, "sha512-gPG0ixVHgtYBUe5DbKX9vzHlhqd9+ZEfs4m/XWy0808av0A2XqMzaG3F5rnPBN7EUJRPlo9TluIi8WHx/pBV+A=="],
 
     "@effect/tsgo-darwin-arm64": ["@effect/tsgo-darwin-arm64@0.45.0", "", { "os": "darwin", "cpu": "arm64" }, "sha512-WUoiEVcm8E19QK6fl63lsssM4dkT9IFnULbmqQ6LBfv7H9uRkpE9S3thj8ZtZ+vl/QY8atwfuaTf+3A1m/kGtQ=="],
