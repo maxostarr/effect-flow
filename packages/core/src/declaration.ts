@@ -1,5 +1,5 @@
-import type { Effect } from "effect";
-import * as Schema from "effect/Schema";
+import type { Context, Effect } from "effect";
+import type * as Schema from "effect/Schema";
 import type * as Schemas from "./schema.ts";
 
 export interface NodeContext<Config = unknown> {
@@ -8,6 +8,7 @@ export interface NodeContext<Config = unknown> {
   readonly config: Config;
   readonly message: Schemas.Message;
   readonly emit: (body: unknown, port?: string) => void;
+  readonly service: <I, S>(key: Context.Key<I, S>) => Effect.Effect<S, never, never>;
 }
 
 export interface NodeDeclaration<Config = any> {

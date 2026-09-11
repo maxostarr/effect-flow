@@ -1,6 +1,7 @@
 export {
   FlowEngineService,
   type FlowEngine,
+  type EngineOptions,
   layerFlowEngine,
   type LoadedFlow,
   backoffMs,

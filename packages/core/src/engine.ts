@@ -66,6 +66,7 @@ export type FlowLoadError =
 export interface EngineOptions {
   readonly adapter: AdapterModule.FlowPersistence;
   readonly declarations: ReadonlyArray<NodeDeclaration<any>>;
+  readonly resources?: Layer.Layer<any> | undefined;
 }
 
 export interface FlowEngine {
@@ -102,6 +103,19 @@ const runWorkflow = Wf.Workflow.make("effect-flow/Run", {
 
 type EngineRequires = Wf.WorkflowEngine.WorkflowEngine | Wf.WorkflowEngine.WorkflowInstance;
 
+const makeNodeService =
+  (resources: Context.Context<any>) =>
+  <I, S>(key: Context.Key<I, S>): Effect.Effect<S, never, never> =>
+    Effect.suspend(() => {
+      const service = Context.getOption(resources, key);
+      if (Option.isNone(service)) {
+        return Effect.die(
+          `effect-flow: service key '${key.key}' not provided by host resource layers`,
+        );
+      }
+      return Effect.succeed(service.value);
+    });
+
 const resolveNode = (
   declarations: ReadonlyMap<string, NodeDeclaration<any>>,
   node: SchemaModule.NodeSchema,
@@ -133,6 +147,7 @@ const resolveNode = (
 const deliverMessage = Effect.fnUntraced(function* (
   loaded: LoadedFlow,
   adapter: AdapterModule.FlowPersistence,
+  service: NodeContext<any>["service"],
   runId: string,
   nextMessageId: () => string,
   instanceId: string,
@@ -148,6 +163,7 @@ const deliverMessage = Effect.fnUntraced(function* (
       node: binding.node,
       config: binding.config,
       message,
+      service,
       emit: (body, port = "0") => {
         emitted.push({ port, payload: body });
       },
@@ -270,6 +286,7 @@ export const backoffMs = (policy: SchemaModule.RetryPolicySchema, attempt: numbe
 const traverseMessages = Effect.fnUntraced(function* (
   loaded: LoadedFlow,
   adapter: AdapterModule.FlowPersistence,
+  service: NodeContext<any>["service"],
   runId: string,
   nextMessageId: () => string,
   frontier: ReadonlyArray<[string, SchemaModule.Message]>,
@@ -292,7 +309,7 @@ const traverseMessages = Effect.fnUntraced(function* (
     yield* Effect.forEach(
       concurrent,
       ([instanceId, message]) =>
-        deliverMessage(loaded, adapter, runId, nextMessageId, instanceId, message).pipe(
+        deliverMessage(loaded, adapter, service, runId, nextMessageId, instanceId, message).pipe(
           Effect.tap((outgoing) =>
             Effect.sync(() => {
               next.push(...outgoing);
@@ -307,7 +324,15 @@ const traverseMessages = Effect.fnUntraced(function* (
         Effect.forEach(
           queue,
           ([instanceId, message]) =>
-            deliverMessage(loaded, adapter, runId, nextMessageId, instanceId, message).pipe(
+            deliverMessage(
+              loaded,
+              adapter,
+              service,
+              runId,
+              nextMessageId,
+              instanceId,
+              message,
+            ).pipe(
               Effect.tap((outgoing) =>
                 Effect.sync(() => {
                   next.push(...outgoing);
@@ -328,6 +353,10 @@ const makeEngineService = (options: EngineOptions) =>
     const declarations = new Map<string, NodeDeclaration<any>>(
       options.declarations.map((declaration) => [declaration.type, declaration]),
     );
+    const resources = (yield* Layer.build(
+      options.resources ?? Layer.empty,
+    )) as Context.Context<any>;
+    const service = makeNodeService(resources);
 
     let flowCounter = 0;
     const loadedFlows = new Map<string, LoadedFlow>();
@@ -345,7 +374,7 @@ const makeEngineService = (options: EngineOptions) =>
       const frontier: Array<[string, SchemaModule.Message]> = [...loaded.nodes.values()]
         .filter((binding) => binding.declaration.type === "inject")
         .map((binding) => [binding.node.id, { id: nextMessageId(), body: undefined as unknown }]);
-      yield* traverseMessages(loaded, adapter, payload.runId, nextMessageId, frontier);
+      yield* traverseMessages(loaded, adapter, service, payload.runId, nextMessageId, frontier);
     });
 
     yield* workflowEngine.register(runWorkflow, (payload, _executionId) => handler(payload));
