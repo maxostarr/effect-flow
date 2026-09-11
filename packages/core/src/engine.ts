@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { Context, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Wf from "effect/unstable/workflow";
 import * as WorkflowEngineModule from "effect/unstable/workflow/WorkflowEngine";
 import * as AdapterModule from "./adapter.ts";
@@ -34,6 +34,26 @@ export class InvalidNodeConfigError extends Schema.TaggedError<InvalidNodeConfig
     message: Schema.String,
   },
 ) {}
+
+export class NodeInvocationFailure extends Schema.TaggedError<NodeInvocationFailure>()(
+  "NodeInvocationFailure",
+  {
+    nodeId: Schema.String,
+    messageId: Schema.String,
+    cause: Schema.Any,
+  },
+) {}
+
+export type AttemptResult = Result.Result<
+  Array<{ port: string; payload: unknown }>,
+  NodeInvocationFailure
+>;
+
+type AttemptEffect = Effect.Effect<
+  Array<{ port: string; payload: unknown }>,
+  NodeInvocationFailure,
+  EngineRequires
+>;
 
 export type FlowLoadError =
   | SchemaModule.InvalidFlowError
@@ -112,44 +132,132 @@ const deliverMessage = Effect.fnUntraced(function* (
 ): Effect.fn.Return<Array<[string, SchemaModule.Message]>, never, EngineRequires> {
   const binding = loaded.nodes.get(instanceId);
   if (!binding) return [];
-  const emitted: Array<{ port: string; payload: unknown }> = [];
-  const ctx: NodeContext<any> = {
-    runId,
-    node: binding.node,
-    config: binding.config,
-    message,
-    emit: (body, port = "0") => {
-      emitted.push({ port, payload: body });
-    },
+
+  const runAttempt = (attemptIndex: number): AttemptEffect => {
+    const emitted: Array<{ port: string; payload: unknown }> = [];
+    const ctx: NodeContext<any> = {
+      runId,
+      node: binding.node,
+      config: binding.config,
+      message,
+      emit: (body, port = "0") => {
+        emitted.push({ port, payload: body });
+      },
+    };
+    const activity = Wf.Activity.make({
+      name: `${instanceId}/${message.id}/attempt-${attemptIndex}`,
+      success: Schema.Array(Schema.Struct({ port: Schema.String, payload: Schema.Unknown })),
+      error: Schema.Any,
+      // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
+      execute: Effect.gen(function* () {
+        // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
+        yield* binding.declaration.execute(ctx);
+        return emitted.map((entry) => ({ port: entry.port, payload: entry.payload }));
+      }),
+    }) as unknown as Effect.Effect<
+      Array<{ port: string; payload: unknown }>,
+      NodeInvocationFailure,
+      EngineRequires
+    >;
+    return activity.pipe(
+      Effect.mapError(
+        (error): NodeInvocationFailure =>
+          new NodeInvocationFailure({
+            nodeId: instanceId,
+            messageId: message.id,
+            cause: error ?? null,
+          }),
+      ),
+    );
   };
 
-  const activity = Wf.Activity.make({
-    name: `${instanceId}/${message.id}`,
-    success: Schema.Array(Schema.Struct({ port: Schema.String, payload: Schema.Unknown })),
-    execute: Effect.gen(function* () {
-      yield* binding.declaration.execute(ctx);
-      return emitted.map((entry) => ({ port: entry.port, payload: entry.payload }));
-    }),
-  });
+  const policy = binding.node.retry;
 
-  const emittedRecords = yield* activity;
+  const outcome: AttemptResult = policy
+    ? yield* retryLoop(runAttempt, policy)
+    : yield* Effect.result(runAttempt(1));
+
+  const outcomeRecords = Result.isSuccess(outcome)
+    ? Option.getOrUndefined(Result.getSuccess(outcome))
+    : undefined;
+
+  if (Result.isFailure(outcome)) {
+    yield* Effect.logError(
+      `[effect-flow] node '${instanceId}' did not handle message '${message.id}':`,
+      Result.getFailure(outcome),
+    );
+  }
   yield* adapter.recordOutput({
     runId,
     nodeId: instanceId,
     message,
-    emitted: emittedRecords as any,
+    emitted: outcomeRecords
+      ? (outcomeRecords as any)
+      : [{ port: SchemaModule.DEAD_LETTER_PORT, payload: message.body }],
   });
 
   const outgoing: Array<[string, SchemaModule.Message]> = [];
-  for (const wire of loaded.wires) {
-    if (wire.source === instanceId) {
-      for (const record of emittedRecords) {
-        outgoing.push([wire.target, { id: nextMessageId(), body: record.payload }]);
+  if (outcomeRecords) {
+    for (const wire of loaded.wires) {
+      if (wire.source === instanceId && (wire.port ?? "0") !== SchemaModule.DEAD_LETTER_PORT) {
+        for (const record of outcomeRecords) {
+          if ((wire.port ?? "0") !== record.port) continue;
+          outgoing.push([wire.target, { id: nextMessageId(), body: record.payload }]);
+        }
+      }
+    }
+  } else {
+    const deadLetterWires = loaded.wires.filter(
+      (wire) => wire.source === instanceId && wire.port === SchemaModule.DEAD_LETTER_PORT,
+    );
+    if (deadLetterWires.length === 0) {
+      yield* Effect.log(
+        `message '${message.id}' dropped at node '${instanceId}' (dead letter unwired)`,
+      );
+    } else {
+      for (const wire of deadLetterWires) {
+        outgoing.push([wire.target, { id: nextMessageId(), body: message.body }]);
       }
     }
   }
   return outgoing;
 });
+
+const retryLoop = (
+  runAttempt: (attemptIndex: number) => AttemptEffect,
+  policy: SchemaModule.RetryPolicySchema,
+): Effect.Effect<AttemptResult, never, EngineRequires> =>
+  Effect.suspend(() => {
+    const tags = policy.errors ?? ["*"];
+    const match = (error: unknown): boolean => {
+      const tag = (error as { _tag?: string })?._tag;
+      return tags.includes("*") || (tag !== undefined && tags.includes(tag));
+    };
+    let index = 1;
+    const loop: Effect.Effect<AttemptResult, never, EngineRequires> = Effect.suspend(() =>
+      Effect.gen(function* () {
+        const result = yield* Effect.result(runAttempt(index));
+        if (Result.isSuccess(result)) return result;
+        const rawFailure = Result.getFailure(result);
+        const failure = Option.isOption(rawFailure)
+          ? Option.getOrUndefined(rawFailure)
+          : rawFailure;
+        if (!failure || !(failure instanceof NodeInvocationFailure) || !match(failure.cause)) {
+          return result;
+        }
+        index++;
+        if (index > policy.maxAttempts) return result;
+        yield* Effect.sleep(Math.round(backoffMs(policy, index - 1)));
+        return yield* loop;
+      }),
+    );
+    return loop;
+  });
+
+export const backoffMs = (policy: SchemaModule.RetryPolicySchema, attempt: number): number => {
+  const { initialMs, multiplier = 2 } = policy.backoff;
+  return initialMs * Math.pow(multiplier, attempt - 1);
+};
 
 const traverseMessages = Effect.fnUntraced(function* (
   loaded: LoadedFlow,

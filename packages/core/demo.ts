@@ -1,24 +1,46 @@
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import {
   debugNode,
+  defineNode,
   FlowEngineService,
   InMemoryFlowPersistence,
   injectNode,
   layerFlowEngine,
-  mapNode,
 } from "./src/index.ts";
+import { DEAD_LETTER_PORT } from "./src/schema.ts";
+
+class NetworkError extends Schema.TaggedError<NetworkError>()("NetworkError", {}) {}
+
+let invocations = 0;
+const flakyMapNode = defineNode("flakyMap", Schema.Struct({ mult: Schema.Number }), (ctx) =>
+  Effect.suspend(() => {
+    invocations++;
+    console.log(`  [${ctx.node.id}] attempt ${invocations} failed (NetworkError)`);
+    return Effect.fail(new NetworkError());
+  }),
+);
 
 const sampleFlow = {
   flowVersion: "1",
-  metadata: { name: "demo", description: "inject -> map -> debug" },
+  metadata: {
+    name: "retry-demo",
+    description: "inject -> flakyMap (always fails, retry maxAttempts 5) -> Dead Letter -> debug",
+  },
   nodes: [
     { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 21 } },
-    { id: "n2", type: "map", position: { x: 100, y: 0 }, config: { mult: 2 } },
+    {
+      id: "n2",
+      type: "flakyMap",
+      position: { x: 100, y: 0 },
+      config: { mult: 2 },
+      retry: { maxAttempts: 5, backoff: { initialMs: 1 } },
+    },
     { id: "n3", type: "debug", position: { x: 200, y: 0 }, config: {} },
   ],
   wires: [
     { source: "n1", target: "n2" },
     { source: "n2", target: "n3" },
+    { source: "n2", target: "n3", port: DEAD_LETTER_PORT },
   ],
 };
 
@@ -34,14 +56,6 @@ const program = Effect.gen(function* () {
       output.message.body,
     );
   }
-
-  const debugSteps = record.outputs.filter((output) => output.nodeId === "n3");
-  console.log(
-    "debug reached:",
-    debugSteps.length === 1,
-    "with body 42:",
-    debugSteps[0]?.message.body === 42,
-  );
 });
 
 Effect.runPromise(
@@ -49,7 +63,7 @@ Effect.runPromise(
     program,
     layerFlowEngine({
       adapter: InMemoryFlowPersistence(),
-      declarations: [injectNode, mapNode, debugNode],
+      declarations: [injectNode, flakyMapNode, debugNode],
     }),
   ),
 ).then(
