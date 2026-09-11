@@ -45,9 +45,9 @@ The user-defined definition of a Node type: configuration schema (an Effect Sche
 _Avoid_: node type, node definition, plugin
 
 **Retry Policy**:
-A user-defined rule for when and how a failed invocation of a Node is retried. None is applied unless the Flow author attaches one.
+A user-defined rule for when and how a failed invocation of a Node is retried: an error matcher (list of error `_tag`s, absent = all errors), a maxAttempts bound, and an exponential backoff shape (initialMs, multiplier). Attached per Node in the Flow JSON (`node.retry`); the engine applies none by default. When an error matcher does not match a failure, that failure is not retried.
 _Avoid_: retry config, backoff config
 
 **Dead Letter**:
-The destination a Message reaches when its delivery exhausts the retry policy of a Node. Flows without one simply log and drop it.
+The destination a Message reaches when its delivery exhausts the retry policy of a Node. Wired as a Wire from the Node's output with port `"dead-letter"`; the Message travels over it with its original body. Flows without one simply log and drop it.
 _Avoid_: error queue, catch-all
