@@ -96,7 +96,7 @@ const cycleDemo = Effect.gen(function* () {
   }
 });
 
-Effect.runPromise(
+void Effect.runPromise(
   Effect.provide(
     cycleDemo,
     layerFlowEngine({
