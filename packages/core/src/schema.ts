@@ -33,11 +33,13 @@ export interface NodeSchema {
 export const Wire = Schema.Struct({
   source: Schema.String,
   target: Schema.String,
+  port: Schema.optionalKey(Schema.String),
 });
 
 export interface WireSchema {
   readonly source: string;
   readonly target: string;
+  readonly port?: string | undefined;
 }
 
 export const Metadata = Schema.Struct({

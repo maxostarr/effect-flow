@@ -140,12 +140,20 @@ const deliverMessage = Effect.fnUntraced(function* (
     emitted: emittedRecords as any,
   });
 
+  const outgoingWires = loaded.wires.filter((wire) => wire.source === instanceId);
   const outgoing: Array<[string, SchemaModule.Message]> = [];
-  for (const wire of loaded.wires) {
-    if (wire.source === instanceId) {
-      for (const record of emittedRecords) {
-        outgoing.push([wire.target, { id: nextMessageId(), body: record.payload }]);
-      }
+  for (const record of emittedRecords) {
+    if (outgoingWires.length === 0) continue;
+    const matched = outgoingWires.filter(
+      (wire) => wire.port === undefined || wire.port === record.port,
+    );
+    if (matched.length === 0) {
+      return yield* Effect.die(
+        `no outgoing wire matches port '${record.port}' on node '${instanceId}'`,
+      );
+    }
+    for (const wire of matched) {
+      outgoing.push([wire.target, { id: nextMessageId(), body: record.payload }]);
     }
   }
   return outgoing;
