@@ -4,6 +4,7 @@ import * as WorkflowEngineModule from "effect/unstable/workflow/WorkflowEngine";
 import * as AdapterModule from "./adapter.ts";
 import type { NodeContext, NodeDeclaration } from "./declaration.ts";
 import * as SchemaModule from "./schema.ts";
+import * as ValidationModule from "./validation.ts";
 
 export interface NodeBinding {
   readonly node: SchemaModule.NodeSchema;
@@ -58,7 +59,8 @@ type AttemptEffect = Effect.Effect<
 export type FlowLoadError =
   | SchemaModule.InvalidFlowError
   | UnknownNodeDeclarationError
-  | InvalidNodeConfigError;
+  | InvalidNodeConfigError
+  | ValidationModule.FlowTopologyError;
 
 export interface EngineOptions {
   readonly adapter: AdapterModule.FlowPersistence;
@@ -318,18 +320,20 @@ const makeEngineService = (options: EngineOptions) =>
         const flowId = `flow-${flowCounter++}`;
         return SchemaModule.parseFlow(json).pipe(
           Effect.flatMap((flow) =>
-            Effect.map(
-              Effect.forEach(flow.nodes, (node) => resolveNode(declarations, node), {
-                concurrency: 1,
-              }),
-              (bindings) => {
-                const nodes = new Map<string, NodeBinding>();
-                for (const binding of bindings) {
-                  nodes.set(binding.node.id, binding);
-                }
-                const loaded: LoadedFlow = { flowId, flow, nodes, wires: flow.wires };
-                return loaded;
-              },
+            Effect.flatMap(ValidationModule.validateTopology(flow), () =>
+              Effect.map(
+                Effect.forEach(flow.nodes, (node) => resolveNode(declarations, node), {
+                  concurrency: 1,
+                }),
+                (bindings) => {
+                  const nodes = new Map<string, NodeBinding>();
+                  for (const binding of bindings) {
+                    nodes.set(binding.node.id, binding);
+                  }
+                  const loaded: LoadedFlow = { flowId, flow, nodes, wires: flow.wires };
+                  return loaded;
+                },
+              ),
             ),
           ),
         );

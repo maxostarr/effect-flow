@@ -70,3 +70,38 @@ Effect.runPromise(
   () => void 0,
   () => void 0,
 );
+
+const cyclicFlow = {
+  flowVersion: "1",
+  metadata: { name: "cyclic demo" },
+  nodes: [
+    { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 21 } },
+    { id: "n2", type: "map", position: { x: 100, y: 0 }, config: { mult: 2 } },
+    { id: "n3", type: "debug", position: { x: 200, y: 0 }, config: {} },
+  ],
+  wires: [
+    { source: "n1", target: "n2" },
+    { source: "n2", target: "n3" },
+    { source: "n3", target: "n2" },
+  ],
+};
+
+const cycleDemo = Effect.gen(function* () {
+  const engine = yield* FlowEngineService;
+  const outcome = yield* Effect.result(engine.loadFlow(cyclicFlow as never));
+  if (outcome._tag === "Success") {
+    console.log("unexpected: cyclic flow loaded");
+  } else {
+    console.log("Flow rejected:", outcome.failure.message);
+  }
+});
+
+Effect.runPromise(
+  Effect.provide(
+    cycleDemo,
+    layerFlowEngine({
+      adapter: InMemoryFlowPersistence(),
+      declarations: [injectNode, mapNode, debugNode],
+    }),
+  ),
+);
