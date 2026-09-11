@@ -1,21 +1,15 @@
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
-import {
-  delayNode,
-  FlowEngineService,
-  InMemoryFlowPersistence,
-  injectNode,
-  layerFlowEngine,
-  mapNode,
-  mergeNode,
-  switchNode,
-} from "../src/index.ts";
-import type { FlowLoadError } from "../src/engine.ts";
+import { delayNode, injectNode, mapNode, mergeNode, switchNode } from "../src/index.ts";
+import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "@effect-flow/core";
 
 const run = (
-  effect: (
-    engine: typeof FlowEngineService.Service,
-  ) => Effect.Effect<unknown, FlowLoadError, never>,
+  effect: (engine: typeof FlowEngineService.Service) => Effect.Effect<unknown, never, never>,
+) => runWithAdapter(InMemoryFlowPersistence(), effect);
+
+const runWithAdapter = (
+  adapter: ReturnType<typeof InMemoryFlowPersistence>,
+  effect: (engine: typeof FlowEngineService.Service) => Effect.Effect<unknown, never, never>,
 ) =>
   Effect.runPromise(
     Effect.provide(
@@ -24,7 +18,7 @@ const run = (
         return (yield* effect(engine)) as void;
       }),
       layerFlowEngine({
-        adapter: InMemoryFlowPersistence(),
+        adapter,
         declarations: [injectNode, mapNode, switchNode, mergeNode, delayNode],
       }),
     ),
@@ -33,7 +27,7 @@ const run = (
 const switchFlow = (payload: unknown) => ({
   flowVersion: "1",
   nodes: [
-    { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { payload } },
+    { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { body: payload } },
     {
       id: "route",
       type: "switch",
@@ -85,7 +79,7 @@ test("switch routing to a port with no wire dies instead of dropping silently", 
         const loaded = yield* engine.loadFlow({
           flowVersion: "1",
           nodes: [
-            { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
+            { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
             {
               id: "route",
               type: "switch",
@@ -95,10 +89,12 @@ test("switch routing to a port with no wire dies instead of dropping silently", 
                 default: "missing",
               },
             },
+            { id: "sink", type: "merge", position: { x: 200, y: 0 }, config: {} },
           ],
           wires: [
             { source: "src", target: "route" },
-            { source: "route", target: "hotSink", port: "hot" },
+            // wire exists, but for a different port than the switch emits
+            { source: "route", target: "sink", port: "hot" },
           ],
         });
         yield* engine.startRun(loaded);
@@ -110,14 +106,47 @@ test("switch routing to a port with no wire dies instead of dropping silently", 
   expect(died).toBe(true);
 });
 
+test("unrouted names the node, message, and offending port", async () => {
+  let cause: unknown;
+  try {
+    await run((engine) =>
+      Effect.gen(function* () {
+        const loaded = yield* engine.loadFlow({
+          flowVersion: "1",
+          nodes: [
+            { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
+            {
+              id: "route",
+              type: "switch",
+              position: { x: 100, y: 0 },
+              config: {
+                routes: [{ field: "k", eq: 1, port: "missing" }],
+                default: "weird",
+              },
+            },
+          ],
+          wires: [{ source: "src", target: "route" }],
+        });
+        yield* engine.startRun(loaded);
+      }),
+    );
+  } catch (error) {
+    cause = error;
+  }
+  const unrouted = cause as { _tag?: string; nodeId?: string; port?: string };
+  expect(unrouted._tag).toBe("UnroutedEmitError");
+  expect(unrouted.nodeId).toBe("route");
+  expect(unrouted.port).toBe("weird");
+});
+
 test("merge accepts messages from multiple wires and emits them downstream", () =>
   run((engine) =>
     Effect.gen(function* () {
       const flowJson = {
         flowVersion: "1",
         nodes: [
-          { id: "srcA", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
-          { id: "srcB", type: "inject", position: { x: 0, y: 100 }, config: { payload: 2 } },
+          { id: "srcA", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
+          { id: "srcB", type: "inject", position: { x: 0, y: 100 }, config: { body: 2 } },
           { id: "join", type: "merge", position: { x: 100, y: 50 }, config: { mult: 1 } },
           { id: "sink", type: "merge", position: { x: 200, y: 50 }, config: { mult: 1 } },
         ],
@@ -146,7 +175,7 @@ test("merge has no wire between independent injects and remains fan-safe", () =>
       const flowJson = {
         flowVersion: "1",
         nodes: [
-          { id: "srcA", type: "inject", position: { x: 0, y: 0 }, config: { payload: 7 } },
+          { id: "srcA", type: "inject", position: { x: 0, y: 0 }, config: { body: 7 } },
           { id: "join", type: "merge", position: { x: 100, y: 50 }, config: { mult: 1 } },
         ],
         wires: [{ source: "srcA", target: "join" }],
@@ -164,7 +193,7 @@ test("delay pauses traversal for its configured duration", () =>
       const flowJson = {
         flowVersion: "1",
         nodes: [
-          { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { payload: "go" } },
+          { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { body: "go" } },
           { id: "pause", type: "delay", position: { x: 100, y: 0 }, config: { duration: 20 } },
           { id: "sink", type: "merge", position: { x: 200, y: 0 }, config: { mult: 1 } },
         ],
@@ -190,7 +219,7 @@ test("delay output recorded after suspension completes", () =>
       const flowJson = {
         flowVersion: "1",
         nodes: [
-          { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { payload: "go" } },
+          { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { body: "go" } },
           { id: "pause", type: "delay", position: { x: 100, y: 0 }, config: { duration: 10 } },
           { id: "after", type: "merge", position: { x: 200, y: 0 }, config: { mult: 1 } },
         ],
@@ -207,3 +236,41 @@ test("delay output recorded after suspension completes", () =>
       expect(after[0]!.message.body).toBe("go");
     }),
   ));
+
+test("a delayed branch does not stall sibling branches (per-message progress)", async () => {
+  const started = Date.now();
+  const timeline: Array<{ key: string; body: unknown; at: number }> = [];
+  const backing = InMemoryFlowPersistence();
+  const stampingAdapter: typeof backing = {
+    recordOutput: (output) =>
+      Effect.suspend(() => {
+        timeline.push({ key: output.nodeId, body: output.message.body, at: Date.now() });
+        return backing.recordOutput(output);
+      }),
+    getRun: backing.getRun,
+  };
+  const flowJson = {
+    flowVersion: "1",
+    nodes: [
+      { id: "fastSrc", type: "inject", position: { x: 0, y: 0 }, config: { body: "fast" } },
+      { id: "slowSrc", type: "inject", position: { x: 0, y: 80 }, config: { body: "slow" } },
+      { id: "pause", type: "delay", position: { x: 100, y: 80 }, config: { duration: 60 } },
+      { id: "sink", type: "merge", position: { x: 200, y: 40 }, config: {} },
+    ],
+    wires: [
+      { source: "fastSrc", target: "sink" },
+      { source: "slowSrc", target: "pause" },
+      { source: "pause", target: "sink" },
+    ],
+  };
+  await runWithAdapter(stampingAdapter, (engine) =>
+    Effect.gen(function* () {
+      const loaded = yield* engine.loadFlow(flowJson);
+      yield* engine.startRun(loaded);
+    }),
+  );
+  const fastSink = timeline.find((t) => t.key === "sink" && t.body === "fast")!;
+  // the fast branch reaches the sink long before the 60ms pause elapses,
+  // i.e. sibling branches never wait on each other
+  expect(fastSink.at - started).toBeLessThan(40);
+});

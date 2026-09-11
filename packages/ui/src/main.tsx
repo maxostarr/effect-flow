@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { FlowViewer } from "./viewer.tsx";
-import type { FlowSchema } from "../../core/src/index.ts";
+import type { FlowSchema } from "@effect-flow/core";
 import "../style.css";
 import "@xyflow/react/dist/style.css";
 

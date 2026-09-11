@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Option, Result, Schema } from "effect";
+import { Context, Deferred, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Wf from "effect/unstable/workflow";
 import * as WorkflowEngineModule from "effect/unstable/workflow/WorkflowEngine";
 import * as AdapterModule from "./adapter.ts";
@@ -8,8 +8,8 @@ import * as ValidationModule from "./validation.ts";
 
 export interface NodeBinding {
   readonly node: SchemaModule.NodeSchema;
-  readonly declaration: NodeDeclaration<any>;
-  readonly config: any;
+  readonly declaration: NodeDeclaration<unknown>;
+  readonly config: unknown;
   readonly invocations: "concurrent" | "serialized";
 }
 
@@ -46,13 +46,25 @@ export class NodeInvocationFailure extends Schema.TaggedError<NodeInvocationFail
   },
 ) {}
 
-export type AttemptResult = Result.Result<
-  Array<{ port: string; payload: unknown }>,
-  NodeInvocationFailure
->;
+/** Emitted on a named port with no Wire carries it onward; routes mis-routing loudly. */
+export class UnroutedEmitError extends Schema.TaggedError<UnroutedEmitError>()(
+  "UnroutedEmitError",
+  {
+    nodeId: Schema.String,
+    messageId: Schema.String,
+    port: Schema.String,
+  },
+) {}
+
+export type EmittedRecord = {
+  port: string;
+  body: unknown;
+};
+
+export type AttemptResult = Result.Result<ReadonlyArray<EmittedRecord>, NodeInvocationFailure>;
 
 type AttemptEffect = Effect.Effect<
-  Array<{ port: string; payload: unknown }>,
+  ReadonlyArray<EmittedRecord>,
   NodeInvocationFailure,
   EngineRequires
 >;
@@ -65,7 +77,7 @@ export type FlowLoadError =
 
 export interface EngineOptions {
   readonly adapter: AdapterModule.FlowPersistence;
-  readonly declarations: ReadonlyArray<NodeDeclaration<any>>;
+  readonly declarations: ReadonlyArray<NodeDeclaration<unknown>>;
   readonly resources?: Layer.Layer<any> | undefined;
 }
 
@@ -79,15 +91,16 @@ export class FlowEngineService extends Context.Service<FlowEngineService, FlowEn
   "effect-flow/FlowEngineService",
 ) {}
 
-const firstIssuePath = (issue: any): ReadonlyArray<PropertyKey> => {
-  const path = Array.isArray(issue?.path) ? issue.path : [];
-  if (Array.isArray(issue?.issues)) {
-    for (const sub of issue.issues) {
+const firstIssuePath = (issue: unknown): ReadonlyArray<PropertyKey> => {
+  const record = issue as { path?: unknown; issues?: unknown; issue?: unknown } | null | undefined;
+  const path = Array.isArray(record?.path) ? record!.path : [];
+  if (Array.isArray(record?.issues)) {
+    for (const sub of record!.issues as ReadonlyArray<unknown>) {
       const inner = firstIssuePath(sub);
       if (inner.length > 0) return [...path, ...inner];
     }
   }
-  if (issue?.issue !== undefined) return [...path, ...firstIssuePath(issue.issue)];
+  if (record?.issue !== undefined) return [...path, ...firstIssuePath(record!.issue)];
   return path;
 };
 
@@ -104,7 +117,7 @@ const runWorkflow = Wf.Workflow.make("effect-flow/Run", {
 type EngineRequires = Wf.WorkflowEngine.WorkflowEngine | Wf.WorkflowEngine.WorkflowInstance;
 
 const makeNodeService =
-  (resources: Context.Context<any>) =>
+  (resources: Context.Context<unknown>) =>
   <I, S>(key: Context.Key<I, S>): Effect.Effect<S, never, never> =>
     Effect.suspend(() => {
       const service = Context.getOption(resources, key);
@@ -117,7 +130,7 @@ const makeNodeService =
     });
 
 const resolveNode = (
-  declarations: ReadonlyMap<string, NodeDeclaration<any>>,
+  declarations: ReadonlyMap<string, NodeDeclaration<unknown>>,
   node: SchemaModule.NodeSchema,
 ): Effect.Effect<NodeBinding, FlowLoadError> =>
   Effect.gen(function* () {
@@ -144,45 +157,57 @@ const resolveNode = (
     };
   });
 
+/** Run-scoped plumbing shared by every Message walking the Flow against Nodes. */
+interface RunSources {
+  readonly loaded: LoadedFlow;
+  readonly adapter: AdapterModule.FlowPersistence;
+  readonly service: NodeContext<never>["service"];
+  readonly runId: string;
+  readonly nextMessageId: () => string;
+}
+
 const deliverMessage = Effect.fnUntraced(function* (
-  loaded: LoadedFlow,
-  adapter: AdapterModule.FlowPersistence,
-  service: NodeContext<any>["service"],
-  runId: string,
-  nextMessageId: () => string,
+  sources: RunSources,
   instanceId: string,
   message: SchemaModule.Message,
-): Effect.fn.Return<Array<[string, SchemaModule.Message]>, never, EngineRequires> {
+): Effect.fn.Return<ReadonlyArray<[string, SchemaModule.Message]>, never, EngineRequires> {
+  const { loaded, adapter, service, runId, nextMessageId } = sources;
   const binding = loaded.nodes.get(instanceId);
   if (!binding) return [];
 
   const runAttempt = (attemptIndex: number): AttemptEffect => {
-    const emitted: Array<{ port: string; payload: unknown }> = [];
-    const ctx: NodeContext<any> = {
+    const emitted: Array<EmittedRecord> = [];
+    const ctx: NodeContext<never> = {
       runId,
       node: binding.node,
       config: binding.config,
       message,
       service,
-      emit: (body, port = "0") => {
-        emitted.push({ port, payload: body });
+      sleep: (durationMs) =>
+        // Durable wait lives HERE, outside the Node body's own clock:
+        // DurableClock.sleep defers to the WorkflowEngine (durable clock for
+        // long waits), so a durable adapter can restart-resume past the pause.
+        Wf.DurableClock.sleep({
+          name: `${instanceId}/${message.id}/sleep-${attemptIndex}`,
+          duration: `${durationMs} millis`,
+        }) as unknown as Effect.Effect<void, never, never>,
+      emit: (body, port = SchemaModule.DEFAULT_PORT) => {
+        emitted.push({ port, body });
       },
     };
     const activity = Wf.Activity.make({
       name: `${instanceId}/${message.id}/attempt-${attemptIndex}`,
-      success: Schema.Array(Schema.Struct({ port: Schema.String, payload: Schema.Unknown })),
+      success: Schema.Array(Schema.Struct({ port: Schema.String, body: Schema.Unknown })),
       error: Schema.Any,
+      // The runtime hands Node body errors to us wrapped; declaring `unknown`
+      // here forces every failure through Schema.Any instead of leaking `any`.
       // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
       execute: Effect.gen(function* () {
         // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
         yield* binding.declaration.execute(ctx);
-        return emitted.map((entry) => ({ port: entry.port, payload: entry.payload }));
+        return emitted.map((entry) => ({ port: entry.port, body: entry.body }));
       }),
-    }) as unknown as Effect.Effect<
-      Array<{ port: string; payload: unknown }>,
-      NodeInvocationFailure,
-      EngineRequires
-    >;
+    }) as unknown as AttemptEffect;
     return activity.pipe(
       Effect.mapError(
         (error): NodeInvocationFailure =>
@@ -215,18 +240,35 @@ const deliverMessage = Effect.fnUntraced(function* (
     runId,
     nodeId: instanceId,
     message,
-    emitted: outcomeRecords
-      ? (outcomeRecords as any)
-      : [{ port: SchemaModule.DEAD_LETTER_PORT, payload: message.body }],
+    emitted: outcomeRecords ?? [{ port: SchemaModule.DEAD_LETTER_PORT, body: message.body }],
   });
 
   const outgoing: Array<[string, SchemaModule.Message]> = [];
   if (outcomeRecords) {
-    for (const wire of loaded.wires) {
-      if (wire.source === instanceId && (wire.port ?? "0") !== SchemaModule.DEAD_LETTER_PORT) {
-        for (const record of outcomeRecords) {
-          if ((wire.port ?? "0") !== record.port) continue;
-          outgoing.push([wire.target, { id: nextMessageId(), body: record.payload }]);
+    for (const record of outcomeRecords) {
+      if (
+        record.port !== SchemaModule.DEFAULT_PORT &&
+        !loaded.wires.some(
+          (wire) =>
+            wire.source === instanceId &&
+            wire.port === record.port &&
+            record.port !== SchemaModule.DEAD_LETTER_PORT,
+        )
+      ) {
+        return yield* Effect.die(
+          new UnroutedEmitError({
+            nodeId: instanceId,
+            messageId: message.id,
+            port: record.port,
+          }),
+        );
+      }
+      for (const wire of loaded.wires) {
+        if (
+          wire.source === instanceId &&
+          (wire.port ?? SchemaModule.DEFAULT_PORT) === record.port
+        ) {
+          outgoing.push([wire.target, { id: nextMessageId(), body: record.body }]);
         }
       }
     }
@@ -283,85 +325,60 @@ export const backoffMs = (policy: SchemaModule.RetryPolicySchema, attempt: numbe
   return initialMs * Math.pow(multiplier, attempt - 1);
 };
 
-const traverseMessages = Effect.fnUntraced(function* (
-  loaded: LoadedFlow,
-  adapter: AdapterModule.FlowPersistence,
-  service: NodeContext<any>["service"],
-  runId: string,
-  nextMessageId: () => string,
-  frontier: ReadonlyArray<[string, SchemaModule.Message]>,
-): Effect.fn.Return<void, never, EngineRequires> {
-  let pending = [...frontier];
-  while (pending.length > 0) {
-    const concurrent: Array<[string, SchemaModule.Message]> = [];
-    const serialized = new Map<string, Array<[string, SchemaModule.Message]>>();
-    for (const item of pending) {
-      const binding = loaded.nodes.get(item[0]);
-      if (binding && binding.invocations === "serialized") {
-        const queue = serialized.get(item[0]);
-        if (queue) queue.push(item);
-        else serialized.set(item[0], [item]);
-      } else {
-        concurrent.push(item);
-      }
-    }
-    const next: Array<[string, SchemaModule.Message]> = [];
-    yield* Effect.forEach(
-      concurrent,
-      ([instanceId, message]) =>
-        deliverMessage(loaded, adapter, service, runId, nextMessageId, instanceId, message).pipe(
-          Effect.tap((outgoing) =>
-            Effect.sync(() => {
-              next.push(...outgoing);
-            }),
-          ),
-        ),
-      { concurrency: "unbounded" },
-    );
-    yield* Effect.forEach(
-      serialized.values(),
-      (queue) =>
-        Effect.forEach(
-          queue,
-          ([instanceId, message]) =>
-            deliverMessage(
-              loaded,
-              adapter,
-              service,
-              runId,
-              nextMessageId,
-              instanceId,
-              message,
-            ).pipe(
-              Effect.tap((outgoing) =>
-                Effect.sync(() => {
-                  next.push(...outgoing);
-                }),
-              ),
-            ),
-          { concurrency: 1, discard: true },
-        ),
-      { concurrency: "unbounded", discard: true },
-    );
-    pending = next;
-  }
-});
-
 const makeEngineService = (options: EngineOptions) =>
   Effect.gen(function* () {
     const adapter = options.adapter;
-    const declarations = new Map<string, NodeDeclaration<any>>(
+    const declarations = new Map<string, NodeDeclaration<unknown>>(
       options.declarations.map((declaration) => [declaration.type, declaration]),
     );
     const resources = (yield* Layer.build(
       options.resources ?? Layer.empty,
-    )) as Context.Context<any>;
+    )) as Context.Context<unknown>;
     const service = makeNodeService(resources);
 
     let flowCounter = 0;
     const loadedFlows = new Map<string, LoadedFlow>();
 
     const workflowEngine = yield* Wf.WorkflowEngine.WorkflowEngine;
+    const walkMessage = Effect.fnUntraced(function* (
+      sources: RunSources,
+      gates: ReadonlyMap<string, Deferred.Deferred<void>>,
+      instanceId: string,
+      message: SchemaModule.Message,
+    ): Effect.fn.Return<void, never, EngineRequires> {
+      const binding = sources.loaded.nodes.get(instanceId);
+      let outgoing: ReadonlyArray<[string, SchemaModule.Message]>;
+      if (binding?.invocations === "serialized") {
+        // Deferred-chain gate: each arrival queues behind the previous one,
+        // so serialized Nodes never run overlapping executes and outputs
+        // record in wire-arrival order.
+        const prior = gates.get(instanceId);
+        const mine = Deferred.makeUnsafe<void>();
+        (gates as Map<string, Deferred.Deferred<void>>).set(instanceId, mine);
+        if (prior) yield* Deferred.await(prior);
+        outgoing = yield* deliverMessage(sources, instanceId, message);
+        yield* Deferred.succeed(mine, undefined);
+      } else {
+        outgoing = yield* deliverMessage(sources, instanceId, message);
+      }
+      for (const [nextId, nextMessage] of outgoing) {
+        yield* walkMessage(sources, gates, nextId, nextMessage);
+      }
+    });
+
+    const runFlowMessages = Effect.fnUntraced(function* (
+      sources: RunSources,
+      frontier: ReadonlyArray<[string, SchemaModule.Message]>,
+    ): Effect.fn.Return<void, never, EngineRequires> {
+      const serialized = new Map<string, Deferred.Deferred<void>>();
+      // Every Message walks independently: no level barrier, so a slow branch
+      // never stalls the rest of the Run.
+      yield* Effect.forEach(
+        frontier,
+        ([instanceId, message]) => walkMessage(sources, serialized, instanceId, message),
+        { concurrency: "unbounded", discard: true },
+      );
+    });
 
     const handler = Effect.fnUntraced(function* (payload: {
       readonly runId: string;
@@ -372,9 +389,12 @@ const makeEngineService = (options: EngineOptions) =>
       let counter = 0;
       const nextMessageId = () => `${payload.runId}#${counter++}`;
       const frontier: Array<[string, SchemaModule.Message]> = [...loaded.nodes.values()]
-        .filter((binding) => binding.declaration.type === "inject")
+        .filter((binding) => SchemaModule.isEntryNode(binding.node))
         .map((binding) => [binding.node.id, { id: nextMessageId(), body: undefined as unknown }]);
-      yield* traverseMessages(loaded, adapter, service, payload.runId, nextMessageId, frontier);
+      yield* runFlowMessages(
+        { loaded, adapter, service, runId: payload.runId, nextMessageId },
+        frontier,
+      );
     });
 
     yield* workflowEngine.register(runWorkflow, (payload, _executionId) => handler(payload));

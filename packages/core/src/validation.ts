@@ -1,5 +1,5 @@
 import { Effect, Graph, Option, Schema } from "effect";
-import type { FlowSchema, WireSchema } from "./schema.ts";
+import { isEntryNode, type FlowSchema, type WireSchema } from "./schema.ts";
 
 const describeWire = (wire: WireSchema): string => `${wire.source} -> ${wire.target}`;
 
@@ -87,9 +87,7 @@ export const validateTopology = (flow: FlowSchema): Effect.Effect<void, FlowTopo
       );
     }
 
-    const entryIds = new Set(
-      flow.nodes.filter((node) => node.type === "inject").map((node) => node.id),
-    );
+    const entryIds = new Set(flow.nodes.filter(isEntryNode).map((node) => node.id));
     if (entryIds.size > 0) {
       const startIndices: Array<Graph.NodeIndex> = [];
       for (const entryId of entryIds) {

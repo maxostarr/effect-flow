@@ -1,12 +1,8 @@
 import { expect, test } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import * as Schema from "effect/Schema";
-import {
-  FlowEngineService,
-  InMemoryFlowPersistence,
-  injectNode,
-  layerFlowEngine,
-} from "../src/index.ts";
+import { injectNode } from "@effect-flow/nodes-basic";
+import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "../src/index.ts";
 import { defineNode } from "../src/declaration.ts";
 import type { FlowLoadError } from "../src/engine.ts";
 
@@ -32,7 +28,7 @@ const greeterNode = defineNode(
 const greeterFlow = () => ({
   flowVersion: "1" as const,
   nodes: [
-    { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { payload: "red" } },
+    { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { body: "red" } },
     { id: "g1", type: "greeter", position: { x: 0, y: 40 }, config: { greeting: "hola" } },
     { id: "g2", type: "greeter", position: { x: 0, y: 80 }, config: { greeting: "bonjour" } },
   ],
@@ -43,7 +39,7 @@ const greeterFlow = () => ({
 });
 
 type EngineShape = typeof FlowEngineService.Service;
-type RunRecord = { outputs: { nodeId: string; emitted: { port: string; payload: unknown }[] }[] };
+type RunRecord = { outputs: { nodeId: string; emitted: { port: string; body: unknown }[] }[] };
 
 const engineLayer = (resources?: Layer.Layer<any>) =>
   layerFlowEngine({
@@ -90,8 +86,8 @@ test("custom node declaration runs in a flow and reaches the host Layer resource
   expect(g1).toHaveLength(1);
   expect(g2).toHaveLength(1);
   // the resource is long-lived: shared state across node invocations in the run
-  expect(g1[0]!.emitted[0]).toEqual({ port: "0", payload: "hola #1" });
-  expect(g2[0]!.emitted[0]).toEqual({ port: "0", payload: "bonjour #2" });
+  expect(g1[0]!.emitted[0]).toEqual({ port: "0", body: "hola #1" });
+  expect(g2[0]!.emitted[0]).toEqual({ port: "0", body: "bonjour #2" });
 });
 
 test("resource layer is built once per engine, not per run", async () => {
@@ -106,7 +102,7 @@ test("resource layer is built once per engine, not per run", async () => {
 
   const g1 = record.outputs.filter((o) => o.nodeId === "g1");
   // run 2 continues where run 1 left off (2 increments in run 1, then 3)
-  expect(g1[0]!.emitted[0]).toEqual({ port: "0", payload: "hola #3" });
+  expect(g1[0]!.emitted[0]).toEqual({ port: "0", body: "hola #3" });
 });
 
 test("invalid node config fails load naming the node and the field", async () => {

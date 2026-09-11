@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 
 export interface NodeOutput {
   readonly runId: string;
@@ -9,7 +9,7 @@ export interface NodeOutput {
   };
   readonly emitted: ReadonlyArray<{
     readonly port: string;
-    readonly payload: unknown;
+    readonly body: unknown;
   }>;
 }
 
@@ -42,8 +42,3 @@ export const InMemoryFlowPersistence = (): FlowPersistence => {
       }),
   };
 };
-
-export const RunRecordSchema = Schema.Struct({
-  runId: Schema.String,
-  outputs: Schema.Array(Schema.Any),
-});

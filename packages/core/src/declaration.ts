@@ -8,10 +8,15 @@ export interface NodeContext<Config = unknown> {
   readonly config: Config;
   readonly message: Schemas.Message;
   readonly emit: (body: unknown, port?: string) => void;
+  /**
+   * Engine-mediated pause. Backed by Workflow-level durable scheduling so a
+   * durable persistence adapter can survive restarts without node changes.
+   */
+  readonly sleep: (durationMs: number) => Effect.Effect<void>;
   readonly service: <I, S>(key: Context.Key<I, S>) => Effect.Effect<S, never, never>;
 }
 
-export interface NodeDeclaration<Config = any> {
+export interface NodeDeclaration<Config = unknown> {
   readonly type: string;
   readonly config: Schema.ConstraintDecoder<Config>;
   readonly invocations?: "concurrent" | "serialized" | undefined;

@@ -105,3 +105,9 @@ export const parseFlow = (input: unknown) =>
 export class InvalidFlowError extends Schema.TaggedError<InvalidFlowError>()("InvalidFlowError", {
   message: Schema.String,
 }) {}
+
+/** Default ports on wires unnamed in Flow JSON; Nodes emitting here drop output if unwired. */
+export const DEFAULT_PORT = "0";
+
+/** Node types that start message traversal; engine + topology share this predicate. */
+export const isEntryNode = (node: NodeSchema): boolean => node.type === "inject";

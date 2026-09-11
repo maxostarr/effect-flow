@@ -1,13 +1,11 @@
 {
-  "name": "@effect-flow/ui",
+  "name": "@effect-flow/nodes-basic",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
     "@effect-flow/core": "workspace:*",
-    "@xyflow/react": "^12.8.6",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "effect": "^4.0.0-rc.113"
   }
 }
