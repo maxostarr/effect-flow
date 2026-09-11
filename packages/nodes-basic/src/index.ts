@@ -1,15 +1,11 @@
 import { Effect } from "effect";
 import * as Schema from "effect/Schema";
-import { defineNode } from "../declaration.ts";
+import { defineNode } from "@effect-flow/core";
 
-export const injectNode = defineNode(
-  "inject",
-  Schema.Struct({ payload: Schema.Unknown }),
-  (ctx) => {
-    ctx.emit(ctx.config.payload);
-    return Effect.void;
-  },
-);
+export const injectNode = defineNode("inject", Schema.Struct({ body: Schema.Unknown }), (ctx) => {
+  ctx.emit(ctx.config.body);
+  return Effect.void;
+});
 
 export const mapNode = defineNode("map", Schema.Struct({ mult: Schema.Number }), (ctx) => {
   ctx.emit((ctx.message.body as number) * ctx.config.mult);
@@ -49,7 +45,7 @@ export const mergeNode = defineNode("merge", Schema.Struct({}), (ctx) => {
 });
 
 export const delayNode = defineNode("delay", Schema.Struct({ duration: Schema.Number }), (ctx) =>
-  Effect.map(Effect.sleep(ctx.config.duration), () => {
+  Effect.map(ctx.sleep(ctx.config.duration), () => {
     ctx.emit(ctx.message.body);
   }),
 );

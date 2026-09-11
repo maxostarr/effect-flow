@@ -21,10 +21,24 @@
     },
     "packages/core": {
       "name": "@effect-flow/core",
+      "dependencies": {
+        "effect": "^4.0.0-rc.113",
+      },
+      "devDependencies": {
+        "@effect-flow/nodes-basic": "workspace:*",
+      },
+    },
+    "packages/nodes-basic": {
+      "name": "@effect-flow/nodes-basic",
+      "dependencies": {
+        "@effect-flow/core": "workspace:*",
+        "effect": "^4.0.0-rc.113",
+      },
     },
     "packages/ui": {
       "name": "@effect-flow/ui",
       "dependencies": {
+        "@effect-flow/core": "workspace:*",
         "@xyflow/react": "^12.8.6",
         "react": "^19.2.0",
         "react-dom": "^19.2.0",
@@ -33,6 +47,8 @@
   },
   "packages": {
     "@effect-flow/core": ["@effect-flow/core@workspace:packages/core"],
+
+    "@effect-flow/nodes-basic": ["@effect-flow/nodes-basic@workspace:packages/nodes-basic"],
 
     "@effect-flow/ui": ["@effect-flow/ui@workspace:packages/ui"],
 

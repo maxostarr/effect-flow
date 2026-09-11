@@ -1,10 +1,9 @@
 import { Effect, Schema } from "effect";
+import { debugNode, injectNode, mapNode } from "@effect-flow/nodes-basic";
 import {
-  debugNode,
   defineNode,
   FlowEngineService,
   InMemoryFlowPersistence,
-  injectNode,
   layerFlowEngine,
 } from "./src/index.ts";
 import { DEAD_LETTER_PORT } from "./src/schema.ts";
@@ -27,7 +26,7 @@ const sampleFlow = {
     description: "inject -> flakyMap (always fails, retry maxAttempts 5) -> Dead Letter -> debug",
   },
   nodes: [
-    { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 21 } },
+    { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 21 } },
     {
       id: "n2",
       type: "flakyMap",
@@ -75,7 +74,7 @@ const cyclicFlow = {
   flowVersion: "1",
   metadata: { name: "cyclic demo" },
   nodes: [
-    { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 21 } },
+    { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 21 } },
     { id: "n2", type: "map", position: { x: 100, y: 0 }, config: { mult: 2 } },
     { id: "n3", type: "debug", position: { x: 200, y: 0 }, config: {} },
   ],

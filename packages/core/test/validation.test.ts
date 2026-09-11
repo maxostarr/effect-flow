@@ -1,13 +1,7 @@
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
-import {
-  FlowEngineService,
-  InMemoryFlowPersistence,
-  injectNode,
-  layerFlowEngine,
-  mapNode,
-  debugNode,
-} from "../src/index.ts";
+import { injectNode, mapNode, debugNode } from "@effect-flow/nodes-basic";
+import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "../src/index.ts";
 import { DanglingWireError, FlowCycleError, UnreachableNodesError } from "../src/validation.ts";
 import type { LoadedFlow } from "../src/engine.ts";
 
@@ -62,7 +56,7 @@ const expectLoadError = async (
 const node = (
   id: string,
   type = "map",
-  config: unknown = type === "inject" ? { payload: 1 } : type === "debug" ? {} : { mult: 1 },
+  config: unknown = type === "inject" ? { body: 1 } : type === "debug" ? {} : { mult: 1 },
 ) => ({
   id,
   type,

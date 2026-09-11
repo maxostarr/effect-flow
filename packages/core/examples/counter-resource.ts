@@ -1,10 +1,10 @@
 import { Context, Effect, Layer } from "effect";
 import * as Schema from "effect/Schema";
+import { injectNode } from "@effect-flow/nodes-basic";
 import {
-  defineNode,
   FlowEngineService,
   InMemoryFlowPersistence,
-  injectNode,
+  defineNode,
   layerFlowEngine,
 } from "@effect-flow/core";
 
@@ -31,7 +31,7 @@ const demoFlow = {
   flowVersion: "1" as const,
   metadata: { name: "counter-resource-demo" },
   nodes: [
-    { id: "src", type: "inject", position: { x: 0, y: 50 }, config: { payload: "hello" } },
+    { id: "src", type: "inject", position: { x: 0, y: 50 }, config: { body: "hello" } },
     { id: "wc", type: "wordcount", position: { x: 120, y: 50 }, config: { prefix: "seen:" } },
   ],
   wires: [{ source: "src", target: "wc" }],

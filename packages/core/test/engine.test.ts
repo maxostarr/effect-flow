@@ -1,13 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Exit } from "effect";
 import * as Schema from "effect/Schema";
+import { injectNode, mapNode, debugNode } from "@effect-flow/nodes-basic";
 import {
   FlowEngineService,
   InMemoryFlowPersistence,
-  injectNode,
   layerFlowEngine,
-  mapNode,
-  debugNode,
   backoffMs,
   DEAD_LETTER_PORT,
   defineNode,
@@ -36,7 +34,7 @@ const sampleFlow = {
   flowVersion: "1",
   metadata: { name: "demo" },
   nodes: [
-    { id: "n1", type: "inject", position: { x: 0, y: 40 }, config: { payload: 21 } },
+    { id: "n1", type: "inject", position: { x: 0, y: 40 }, config: { body: 21 } },
     { id: "n2", type: "map", position: { x: 0, y: 80 }, config: { mult: 2 } },
     { id: "n3", type: "debug", position: { x: 0, y: 120 }, config: {} },
   ],
@@ -72,12 +70,12 @@ test("inject starts a Run; map and debug reachable via wires", () =>
       const mapped = record.outputs.filter((out) => out.nodeId === "n2");
       expect(mapped.length).toBe(1);
       expect(mapped[0]!.message.body).toBe(21);
-      expect(mapped[0]!.emitted[0]).toEqual({ port: "0", payload: 42 });
+      expect(mapped[0]!.emitted[0]).toEqual({ port: "0", body: 42 });
 
       const debug = record.outputs.filter((out) => out.nodeId === "n3");
       expect(debug.length).toBe(1);
       expect(debug[0]!.message.body).toBe(42);
-      expect(debug[0]!.emitted[0]).toEqual({ port: "0", payload: { observedBy: "n3", body: 42 } });
+      expect(debug[0]!.emitted[0]).toEqual({ port: "0", body: { observedBy: "n3", body: 42 } });
     }),
   ));
 
@@ -92,6 +90,51 @@ test("loadFlow fails on unknown node declaration", async () => {
     ),
   );
   expect(Exit.isFailure(result as never)).toBe(true);
+});
+
+test("core package ships only Declaration primitives + engine: no basic node implementations", async () => {
+  const core = await import("../src/index.ts");
+  expect("injectNode" in core).toBe(false);
+  expect("mapNode" in core).toBe(false);
+  expect("switchNode" in core).toBe(false);
+  expect("mergeNode" in core).toBe(false);
+  expect("delayNode" in core).toBe(false);
+  expect("debugNode" in core).toBe(false);
+  expect("defineNode" in core).toBe(true);
+});
+
+test("core runs flows with host-authored declarations alone (no basic nodes registered)", async () => {
+  const triggerNode = defineNode("inject", Schema.Struct({ body: Schema.Unknown }), (ctx) => {
+    ctx.emit(ctx.config.body);
+    return Effect.void;
+  });
+  const counterNode = defineNode("counter", Schema.Struct({}), (ctx) => {
+    ctx.emit({ counted: ctx.message.body });
+    return Effect.void;
+  });
+  const result = await Effect.runPromise(
+    Effect.provide(
+      Effect.gen(function* () {
+        const engine = yield* FlowEngineService;
+        const loaded = yield* engine.loadFlow({
+          flowVersion: "1",
+          nodes: [
+            { id: "t", type: "inject", position: { x: 0, y: 0 }, config: { body: "ping" } },
+            { id: "c", type: "counter", position: { x: 1, y: 0 }, config: {} },
+          ],
+          wires: [{ source: "t", target: "c" }],
+        });
+        const record = yield* engine.startRun(loaded);
+        return record.outputs.filter((out) => out.nodeId === "c");
+      }),
+      layerFlowEngine({
+        adapter: InMemoryFlowPersistence(),
+        declarations: [triggerNode, counterNode],
+      }),
+    ),
+  );
+  expect(result).toHaveLength(1);
+  expect(result[0]!.message.body).toBe("ping");
 });
 
 test("persistence adapter records run outputs behind in-memory implementation", () =>
@@ -134,7 +177,7 @@ const attemptRun = (declarations: ReturnType<typeof defineNode>[], flow: unknown
 const flakyFlow = (flakyId: string, failures: number, retry?: unknown) => ({
   flowVersion: "1" as const,
   nodes: [
-    { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
+    { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
     {
       id: flakyId,
       type: "flaky",
@@ -170,7 +213,7 @@ test("flaky node recovers on retry success", async () => {
       attemptRun([flaky], {
         flowVersion: "1",
         nodes: [
-          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
+          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
           {
             id: "n2",
             type: "flaky",
@@ -188,13 +231,13 @@ test("flaky node recovers on retry success", async () => {
   expect(counter.count).toBe(3);
   const outputs = (
     record as unknown as {
-      outputs: { nodeId: string; emitted: { port: string; payload: unknown }[] }[];
+      outputs: { nodeId: string; emitted: { port: string; body: unknown }[] }[];
     }
   ).outputs.filter((o) => o.nodeId === "n2");
   expect(outputs).toHaveLength(1);
   expect(outputs[0]!.emitted[0]!.port).toBe("0");
-  expect(typeof outputs[0]!.emitted[0]!.payload).toBe("string");
-  expect((outputs[0]!.emitted[0]!.payload as string).startsWith("ok-run-")).toBe(true);
+  expect(typeof outputs[0]!.emitted[0]!.body).toBe("string");
+  expect((outputs[0]!.emitted[0]!.body as string).startsWith("ok-run-")).toBe(true);
 });
 
 test("retry policy matches error type", async () => {
@@ -205,7 +248,7 @@ test("retry policy matches error type", async () => {
       attemptRun([flaky], {
         flowVersion: "1",
         nodes: [
-          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
+          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
           {
             id: "n2",
             type: "flaky",
@@ -234,7 +277,7 @@ test("retry policy retries matched error type", async () => {
       attemptRun([flaky], {
         flowVersion: "1",
         nodes: [
-          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
+          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
           {
             id: "n2",
             type: "flaky",
@@ -263,7 +306,7 @@ test("node without retry policy fails immediately (no engine default retry)", as
       attemptRun([flaky], {
         flowVersion: "1",
         nodes: [
-          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
+          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
           { id: "n2", type: "flaky", position: { x: 0, y: 0 }, config: { failures: 1 } },
         ],
         wires: [{ source: "n1", target: "n2" }],
@@ -305,7 +348,7 @@ test("unwired dead letter: engine completes and no downstream message travels", 
       attemptRun([flaky], {
         flowVersion: "1",
         nodes: [
-          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
+          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
           { id: "n2", type: "flaky", position: { x: 0, y: 0 }, config: { failures: 99 } },
           { id: "dl", type: "debug", position: { x: 0, y: 0 }, config: {} },
         ],
@@ -347,9 +390,9 @@ describe("per-node serialization opt-in", () => {
   const gateFlow = (gateNodeJson: Record<string, unknown>, delayMs: number) => ({
     flowVersion: "1" as const,
     nodes: [
-      { id: "i1", type: "inject", position: { x: 0, y: 0 }, config: { payload: 1 } },
-      { id: "i2", type: "inject", position: { x: 0, y: 10 }, config: { payload: 2 } },
-      { id: "i3", type: "inject", position: { x: 0, y: 20 }, config: { payload: 3 } },
+      { id: "i1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
+      { id: "i2", type: "inject", position: { x: 0, y: 10 }, config: { body: 2 } },
+      { id: "i3", type: "inject", position: { x: 0, y: 20 }, config: { body: 3 } },
       { id: "gate", type: "gate", position: { x: 40, y: 0 }, config: { delayMs }, ...gateNodeJson },
     ],
     wires: [
@@ -401,7 +444,7 @@ describe("per-node serialization opt-in", () => {
     expect(gateOutputs.length).toBe(3);
     // wire-arrival ordering: each recordOutput is logged exit-order, never interleaved
     for (const out of gateOutputs) {
-      expect(out.emitted[0]?.payload).toEqual(`done:gate#${out.message.id}`);
+      expect(out.emitted[0]?.body).toEqual(`done:gate#${out.message.id}`);
     }
   });
 

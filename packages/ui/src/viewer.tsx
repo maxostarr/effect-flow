@@ -8,7 +8,7 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import type { FlowSchema, NodeSchema } from "../../core/src/index.ts";
+import { DEFAULT_PORT, type FlowSchema, type NodeSchema } from "@effect-flow/core";
 
 const FLOW_NODE = "flowNode";
 
@@ -37,7 +37,7 @@ export const toReactFlow = (flow: FlowSchema): { nodes: Node[]; edges: Edge[] } 
     data: { node: n } satisfies FlowNodeData,
   })),
   edges: flow.wires.map((w) => ({
-    id: `${w.source}->${w.target}`,
+    id: `${w.source}:${w.port ?? DEFAULT_PORT}->${w.target}`,
     source: w.source,
     target: w.target,
   })),

@@ -1,14 +1,6 @@
 import { Effect } from "effect";
-import {
-  delayNode,
-  FlowEngineService,
-  InMemoryFlowPersistence,
-  injectNode,
-  layerFlowEngine,
-  mapNode,
-  mergeNode,
-  switchNode,
-} from "@effect-flow/core";
+import { delayNode, injectNode, mapNode, mergeNode, switchNode } from "@effect-flow/nodes-basic";
+import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "@effect-flow/core";
 
 const delayMs = Number(process.env.DEMO_DELAY_MS ?? 30_000);
 
@@ -20,7 +12,7 @@ const demoFlow = {
       id: "src",
       type: "inject",
       position: { x: 0, y: 50 },
-      config: { payload: { kind: "hot", value: 10 } },
+      config: { body: { kind: "hot", value: 10 } },
     },
     {
       id: "route",
