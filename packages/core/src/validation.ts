@@ -1,37 +1,34 @@
-import { Effect, Graph, Option, Schema } from "effect";
+import { Effect, Graph, Option } from "effect";
 import { isEntryNode, type FlowSchema, type WireSchema } from "./schema.ts";
+import {
+  DanglingWireError,
+  DuplicateNodeError,
+  FlowCycleError,
+  UnreachableNodesError,
+  type FlowTopologyError,
+} from "./errors.ts";
 
 const describeWire = (wire: WireSchema): string => `${wire.source} -> ${wire.target}`;
-
-export class FlowCycleError extends Schema.TaggedError<FlowCycleError>()("FlowCycleError", {
-  nodes: Schema.Array(Schema.String),
-  wires: Schema.Array(Schema.String),
-  message: Schema.String,
-}) {}
-
-export class DanglingWireError extends Schema.TaggedError<DanglingWireError>()(
-  "DanglingWireError",
-  {
-    wire: Schema.String,
-    missingNodeId: Schema.String,
-    message: Schema.String,
-  },
-) {}
-
-export class UnreachableNodesError extends Schema.TaggedError<UnreachableNodesError>()(
-  "UnreachableNodesError",
-  {
-    nodes: Schema.Array(Schema.String),
-    message: Schema.String,
-  },
-) {}
-
-export type FlowTopologyError = FlowCycleError | DanglingWireError | UnreachableNodesError;
 
 const buildFlowGraph = Graph.directed<string, string>;
 
 export const validateTopology = (flow: FlowSchema): Effect.Effect<void, FlowTopologyError> =>
   Effect.gen(function* () {
+    // Duplicate ids would silently last-win in the id -> binding map; reject at
+    // load alongside the cycle/dangling checks.
+    const seenIds = new Set<string>();
+    for (const node of flow.nodes) {
+      if (seenIds.has(node.id)) {
+        return yield* Effect.fail(
+          new DuplicateNodeError({
+            nodeId: node.id,
+            message: `Flow declares node id "${node.id}" more than once`,
+          }),
+        );
+      }
+      seenIds.add(node.id);
+    }
+
     const nodeIds = new Set(flow.nodes.map((node) => node.id));
 
     for (const wire of flow.wires) {

@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import { injectNode, mapNode, debugNode } from "@effect-flow/nodes-basic";
 import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "../src/index.ts";
-import { DanglingWireError, FlowCycleError, UnreachableNodesError } from "../src/validation.ts";
+import {
+  DanglingWireError,
+  DuplicateNodeError,
+  FlowCycleError,
+  UnreachableNodesError,
+} from "../src/errors.ts";
 import type { LoadedFlow } from "../src/engine.ts";
 
 const load = (flow: unknown) =>
@@ -90,6 +95,14 @@ test("dangling wire rejected at load", async () => {
   );
   expect(error.missingNodeId).toBe("ghost");
   expect(error.message).toContain("ghost");
+});
+
+test("duplicate node id rejected at load, naming the id", async () => {
+  const error = await expectLoadError(
+    flow([node("a", "inject"), node("b"), node("b")], [{ source: "a", target: "b" }]),
+    DuplicateNodeError,
+  );
+  expect(error.message).toContain("b");
 });
 
 test("valid acyclic flow passes cleanly", async () => {

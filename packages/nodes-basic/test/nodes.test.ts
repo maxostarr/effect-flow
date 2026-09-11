@@ -2,14 +2,19 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import { delayNode, injectNode, mapNode, mergeNode, switchNode } from "../src/index.ts";
 import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "@effect-flow/core";
+import type { FlowLoadError } from "@effect-flow/core";
 
 const run = (
-  effect: (engine: typeof FlowEngineService.Service) => Effect.Effect<unknown, never, never>,
+  effect: (
+    engine: typeof FlowEngineService.Service,
+  ) => Effect.Effect<unknown, FlowLoadError, never>,
 ) => runWithAdapter(InMemoryFlowPersistence(), effect);
 
 const runWithAdapter = (
   adapter: ReturnType<typeof InMemoryFlowPersistence>,
-  effect: (engine: typeof FlowEngineService.Service) => Effect.Effect<unknown, never, never>,
+  effect: (
+    engine: typeof FlowEngineService.Service,
+  ) => Effect.Effect<unknown, FlowLoadError, never>,
 ) =>
   Effect.runPromise(
     Effect.provide(

@@ -9,7 +9,8 @@ export interface NodeContext<Config = unknown> {
   readonly message: Schemas.Message;
   readonly emit: (body: unknown, port?: string) => void;
   /**
-   * Engine-mediated pause. Backed by Workflow-level durable scheduling so a
+   * Engine-mediated pause, and the primitive Node authors call inside their own
+   * `execute` to wait. Backed by Workflow-level DurableClock scheduling so a
    * durable persistence adapter can survive restarts without node changes.
    */
   readonly sleep: (durationMs: number) => Effect.Effect<void>;

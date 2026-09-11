@@ -44,8 +44,12 @@ export const mergeNode = defineNode("merge", Schema.Struct({}), (ctx) => {
   return Effect.void;
 });
 
+// Delay = the durable-clock-backed ctx.sleep primitive inside the Node
+// definition itself; no engine special-casing, so Node authors get the same
+// resumable pause in their own nodes.
 export const delayNode = defineNode("delay", Schema.Struct({ duration: Schema.Number }), (ctx) =>
-  Effect.map(ctx.sleep(ctx.config.duration), () => {
+  Effect.gen(function* () {
+    yield* ctx.sleep(ctx.config.duration);
     ctx.emit(ctx.message.body);
   }),
 );

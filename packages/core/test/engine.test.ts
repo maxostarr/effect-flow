@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Layer, Option } from "effect";
 import * as Schema from "effect/Schema";
-import { injectNode, mapNode, debugNode } from "@effect-flow/nodes-basic";
+import * as Wf from "effect/unstable/workflow";
+import * as WorkflowEngineModule from "effect/unstable/workflow/WorkflowEngine";
+import { injectNode, mapNode, debugNode, delayNode, mergeNode } from "@effect-flow/nodes-basic";
 import {
   FlowEngineService,
   InMemoryFlowPersistence,
@@ -11,6 +13,7 @@ import {
   defineNode,
 } from "../src/index.ts";
 import type { FlowLoadError } from "../src/engine.ts";
+import type { NodeDeclaration } from "../src/declaration.ts";
 
 const run = (
   effect: (
@@ -161,13 +164,13 @@ const makeFlakyNode = (attemptCounter: { count: number }) =>
     }),
   );
 
-const retryEngineLayer = (extra: ReturnType<typeof defineNode>[]) =>
+const retryEngineLayer = (extra: NodeDeclaration<any>[]) =>
   layerFlowEngine({
     adapter: InMemoryFlowPersistence(),
     declarations: [injectNode, debugNode, ...extra],
   });
 
-const attemptRun = (declarations: ReturnType<typeof defineNode>[], flow: unknown) =>
+const attemptRun = (declarations: NodeDeclaration<any>[], flow: unknown) =>
   Effect.gen(function* () {
     const engine = yield* FlowEngineService;
     const loaded = yield* engine.loadFlow(flow);
@@ -207,7 +210,7 @@ test("flaky node retried until policy bound exhausted, then stops", async () => 
 
 test("flaky node recovers on retry success", async () => {
   const counter = { count: 0 };
-  const flaky = makeFlakyNode(counter, 2);
+  const flaky = makeFlakyNode(counter);
   const record = await Effect.runPromise(
     Effect.provide(
       attemptRun([flaky], {
@@ -300,7 +303,7 @@ test("retry policy retries matched error type", async () => {
 
 test("node without retry policy fails immediately (no engine default retry)", async () => {
   const counter = { count: 0 };
-  const flaky = makeFlakyNode(counter, 1);
+  const flaky = makeFlakyNode(counter);
   await Effect.runPromise(
     Effect.provide(
       attemptRun([flaky], {
@@ -477,4 +480,184 @@ describe("per-node serialization opt-in", () => {
     );
     expect(result._tag).toBe("Failure");
   });
+});
+
+/**
+ * WorkflowEngine spy wrapping the in-memory engine: records the registration
+ * and execution traffic that flows through the injected engine (the surface a
+ * durable engine would own), then delegates.
+ */
+const makeSpyEngine = () => {
+  const registeredTags: Array<string> = [];
+  const executedPayloads: Array<{ runId: string; flowId: string }> = [];
+  const spy = Layer.effect(
+    Wf.WorkflowEngine.WorkflowEngine,
+    Effect.map(
+      Wf.WorkflowEngine.WorkflowEngine,
+      (inner) =>
+        ({
+          ...inner,
+          register: (
+            workflow: Parameters<typeof inner.register>[0],
+            execute: Parameters<typeof inner.register>[1],
+          ) => {
+            registeredTags.push(workflow._tag);
+            // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
+            return inner.register(workflow, execute);
+          },
+          execute: (
+            workflow: Parameters<typeof inner.execute>[0],
+            options: Parameters<typeof inner.execute>[1],
+          ) => {
+            executedPayloads.push(options.payload as { runId: string; flowId: string });
+            // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
+            return inner.execute(workflow, options);
+          },
+        }) as typeof inner,
+    ),
+  );
+  return {
+    layer: Layer.provide(spy, WorkflowEngineModule.layerMemory),
+    registeredTags,
+    executedPayloads,
+  };
+};
+
+test("injected WorkflowEngine layer backs Runs end to end", async () => {
+  const counter = { count: 0 };
+  const flaky = makeFlakyNode(counter);
+  const spy = makeSpyEngine();
+  const record = (await Effect.runPromise(
+    Effect.provide(
+      attemptRun([flaky], {
+        flowVersion: "1",
+        nodes: [
+          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
+          {
+            id: "n2",
+            type: "flaky",
+            position: { x: 0, y: 0 },
+            config: { failures: 2 },
+            retry: { maxAttempts: 3, backoff: { initialMs: 10, multiplier: 2 } },
+          },
+        ],
+        wires: [{ source: "n1", target: "n2" }],
+      }),
+      layerFlowEngine({
+        adapter: InMemoryFlowPersistence(),
+        declarations: [injectNode, flaky],
+        workflowEngine: spy.layer,
+      }),
+    ),
+  )) as unknown as { runId: string; outputs: unknown[] };
+
+  // the injected engine owns Run registration + execution (its persistence
+  // surface), which is what makes Runs restart-safe with a durable engine
+  expect(spy.registeredTags).toContain("effect-flow/Run");
+  expect(spy.executedPayloads.length).toBe(1);
+  expect(spy.executedPayloads[0]!.runId).toBe(record.runId);
+  // retry with nonzero backoff still walks all attempts (durable clock pauses)
+  expect(counter.count).toBe(3);
+  // one record for n1 (inject) + one for n2's eventual success
+  expect(record.outputs.length).toBe(2);
+});
+
+test("retry backoff really pauses between attempts (durable clock, not skipped)", async () => {
+  const counter = { count: 0 };
+  const flaky = makeFlakyNode(counter);
+  const started = Date.now();
+  await Effect.runPromise(
+    Effect.provide(
+      attemptRun([flaky], {
+        flowVersion: "1",
+        nodes: [
+          { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 1 } },
+          {
+            id: "n2",
+            type: "flaky",
+            position: { x: 0, y: 0 },
+            config: { failures: 99 },
+            retry: { maxAttempts: 3, backoff: { initialMs: 40, multiplier: 2 } },
+          },
+        ],
+        wires: [{ source: "n1", target: "n2" }],
+      }),
+      retryEngineLayer([flaky]),
+    ),
+  );
+  // attempt 1 + 40ms + attempt 2 + 80ms + attempt 3
+  expect(counter.count).toBe(3);
+  expect(Date.now() - started).toBeGreaterThanOrEqual(115);
+});
+
+test("delay node sleeps through ctx.sleep even under an injected engine", async () => {
+  const spy = makeSpyEngine();
+  const record = (await Effect.runPromise(
+    Effect.provide(
+      Effect.gen(function* () {
+        const engine = yield* FlowEngineService;
+        const loaded = yield* engine.loadFlow({
+          flowVersion: "1",
+          nodes: [
+            { id: "src", type: "inject", position: { x: 0, y: 0 }, config: { body: "go" } },
+            { id: "pause", type: "delay", position: { x: 100, y: 0 }, config: { duration: 15 } },
+            { id: "sink", type: "merge", position: { x: 200, y: 0 }, config: {} },
+          ],
+          wires: [
+            { source: "src", target: "pause" },
+            { source: "pause", target: "sink" },
+          ],
+        });
+        return yield* engine.startRun(loaded);
+      }),
+      layerFlowEngine({
+        adapter: InMemoryFlowPersistence(),
+        declarations: [injectNode, delayNode, mergeNode],
+        workflowEngine: spy.layer,
+      }),
+    ),
+  )) as unknown as { outputs: Array<{ nodeId: string }> };
+  const pause = record.outputs.filter((out) => out.nodeId === "pause");
+  expect(pause.length).toBe(1);
+  expect(spy.executedPayloads.length).toBe(1);
+});
+
+test("recordOutput dedupes on the stable Run/Node/Message key", async () => {
+  const adapter = InMemoryFlowPersistence();
+  const output = {
+    runId: "run-1",
+    nodeId: "n1",
+    message: { id: "m1", body: 1 as unknown },
+    emitted: [],
+  };
+  const record = await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* adapter.recordOutput(output);
+      yield* adapter.recordOutput(output);
+      return Option.getOrThrow(yield* adapter.getRun("run-1"));
+    }),
+  );
+  expect(record.outputs.length).toBe(1);
+});
+
+test("distinct messages at the same node are not collapsed by dedupe", async () => {
+  const adapter = InMemoryFlowPersistence();
+  const record = await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* adapter.recordOutput({
+        runId: "run-1",
+        nodeId: "n1",
+        message: { id: "m1", body: 1 as unknown },
+        emitted: [],
+      });
+      yield* adapter.recordOutput({
+        runId: "run-1",
+        nodeId: "n1",
+        message: { id: "m2", body: 2 as unknown },
+        emitted: [],
+      });
+      return Option.getOrThrow(yield* adapter.getRun("run-1"));
+    }),
+  );
+  expect(record.outputs.length).toBe(2);
 });
