@@ -35,6 +35,8 @@ export interface RetryPolicySchema {
 /** Port carried by a Wire routing toward a Dead Letter destination. */
 export const DEAD_LETTER_PORT = "dead-letter";
 
+export const Invocations = Schema.Literals(["concurrent", "serialized"]);
+
 export const Node = Schema.Struct({
   id: Schema.NonEmptyString,
   type: Schema.NonEmptyString,
@@ -44,6 +46,7 @@ export const Node = Schema.Struct({
   }),
   config: Schema.Unknown,
   retry: Schema.optionalKey(RetryPolicy),
+  invocations: Schema.optionalKey(Invocations),
 });
 
 export interface NodeSchema {
@@ -55,6 +58,7 @@ export interface NodeSchema {
   };
   readonly config: unknown;
   readonly retry?: RetryPolicySchema | undefined;
+  readonly invocations?: "concurrent" | "serialized" | undefined;
 }
 
 export const Wire = Schema.Struct({

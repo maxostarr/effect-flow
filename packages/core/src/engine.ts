@@ -10,6 +10,7 @@ export interface NodeBinding {
   readonly node: SchemaModule.NodeSchema;
   readonly declaration: NodeDeclaration<any>;
   readonly config: any;
+  readonly invocations: "concurrent" | "serialized";
 }
 
 export interface LoadedFlow {
@@ -121,7 +122,12 @@ const resolveNode = (
           message: (error as { message?: string }).message ?? "invalid node config",
         }),
     );
-    return { node, declaration, config };
+    return {
+      node,
+      declaration,
+      config,
+      invocations: node.invocations ?? declaration.invocations ?? "concurrent",
+    };
   });
 
 const deliverMessage = Effect.fnUntraced(function* (
@@ -270,9 +276,21 @@ const traverseMessages = Effect.fnUntraced(function* (
 ): Effect.fn.Return<void, never, EngineRequires> {
   let pending = [...frontier];
   while (pending.length > 0) {
+    const concurrent: Array<[string, SchemaModule.Message]> = [];
+    const serialized = new Map<string, Array<[string, SchemaModule.Message]>>();
+    for (const item of pending) {
+      const binding = loaded.nodes.get(item[0]);
+      if (binding && binding.invocations === "serialized") {
+        const queue = serialized.get(item[0]);
+        if (queue) queue.push(item);
+        else serialized.set(item[0], [item]);
+      } else {
+        concurrent.push(item);
+      }
+    }
     const next: Array<[string, SchemaModule.Message]> = [];
     yield* Effect.forEach(
-      pending,
+      concurrent,
       ([instanceId, message]) =>
         deliverMessage(loaded, adapter, runId, nextMessageId, instanceId, message).pipe(
           Effect.tap((outgoing) =>
@@ -282,6 +300,23 @@ const traverseMessages = Effect.fnUntraced(function* (
           ),
         ),
       { concurrency: "unbounded" },
+    );
+    yield* Effect.forEach(
+      serialized.values(),
+      (queue) =>
+        Effect.forEach(
+          queue,
+          ([instanceId, message]) =>
+            deliverMessage(loaded, adapter, runId, nextMessageId, instanceId, message).pipe(
+              Effect.tap((outgoing) =>
+                Effect.sync(() => {
+                  next.push(...outgoing);
+                }),
+              ),
+            ),
+          { concurrency: 1, discard: true },
+        ),
+      { concurrency: "unbounded", discard: true },
     );
     pending = next;
   }
