@@ -1,24 +1,19 @@
 import { Effect, Schema } from "effect";
-
-export interface Message {
-  readonly id: string;
-  readonly body: unknown;
-}
+import { InvalidFlowError } from "./errors.ts";
 
 export const Message = Schema.Struct({
   id: Schema.String,
   body: Schema.Unknown,
 });
 
+export type Message = typeof Message.Type;
+
 export const ExponentialBackoff = Schema.Struct({
   initialMs: Schema.Number,
   multiplier: Schema.optionalKey(Schema.Number),
 });
 
-export interface ExponentialBackoffSchema {
-  readonly initialMs: number;
-  readonly multiplier?: number | undefined;
-}
+export type ExponentialBackoffSchema = typeof ExponentialBackoff.Type;
 
 export const RetryPolicy = Schema.Struct({
   errors: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
@@ -26,11 +21,7 @@ export const RetryPolicy = Schema.Struct({
   backoff: ExponentialBackoff,
 });
 
-export interface RetryPolicySchema {
-  readonly errors?: ReadonlyArray<string> | undefined;
-  readonly maxAttempts: number;
-  readonly backoff: ExponentialBackoffSchema;
-}
+export type RetryPolicySchema = typeof RetryPolicy.Type;
 
 /** Port carried by a Wire routing toward a Dead Letter destination. */
 export const DEAD_LETTER_PORT = "dead-letter";
@@ -49,17 +40,7 @@ export const Node = Schema.Struct({
   invocations: Schema.optionalKey(Invocations),
 });
 
-export interface NodeSchema {
-  readonly id: string;
-  readonly type: string;
-  readonly position: {
-    readonly x: number;
-    readonly y: number;
-  };
-  readonly config: unknown;
-  readonly retry?: RetryPolicySchema | undefined;
-  readonly invocations?: "concurrent" | "serialized" | undefined;
-}
+export type NodeSchema = typeof Node.Type;
 
 export const Wire = Schema.Struct({
   source: Schema.String,
@@ -67,16 +48,14 @@ export const Wire = Schema.Struct({
   port: Schema.optionalKey(Schema.String),
 });
 
-export interface WireSchema {
-  readonly source: string;
-  readonly target: string;
-  readonly port?: string | undefined;
-}
+export type WireSchema = typeof Wire.Type;
 
 export const Metadata = Schema.Struct({
   name: Schema.optionalKey(Schema.String),
   description: Schema.optionalKey(Schema.String),
 });
+
+export type MetadataSchema = typeof Metadata.Type;
 
 export const Flow = Schema.Struct({
   flowVersion: Schema.Literal("1"),
@@ -85,26 +64,12 @@ export const Flow = Schema.Struct({
   wires: Schema.Array(Wire),
 });
 
-export type MetadataSchema = {
-  readonly name?: string | undefined;
-  readonly description?: string | undefined;
-};
-
-export type FlowSchema = {
-  readonly flowVersion: "1";
-  readonly metadata?: MetadataSchema | undefined;
-  readonly nodes: ReadonlyArray<NodeSchema>;
-  readonly wires: ReadonlyArray<WireSchema>;
-};
+export type FlowSchema = typeof Flow.Type;
 
 export const parseFlow = (input: unknown) =>
   Schema.decodeUnknownEffect(Flow)(input).pipe(
     Effect.mapError((error) => new InvalidFlowError({ message: error.message })),
   );
-
-export class InvalidFlowError extends Schema.TaggedError<InvalidFlowError>()("InvalidFlowError", {
-  message: Schema.String,
-}) {}
 
 /** Default ports on wires unnamed in Flow JSON; Nodes emitting here drop output if unwired. */
 export const DEFAULT_PORT = "0";

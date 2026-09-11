@@ -10,12 +10,30 @@ export { defineNode, type NodeContext, type NodeDeclaration } from "./declaratio
 export { InMemoryFlowPersistence, type FlowPersistence } from "./adapter.ts";
 export {
   parseFlow,
-  InvalidFlowError,
   Flow,
   RetryPolicy,
   DEAD_LETTER_PORT,
   DEFAULT_PORT,
   isEntryNode,
-  type FlowSchema,
-  type RetryPolicySchema,
+} from "./schema.ts";
+export {
+  InvalidFlowError,
+  DuplicateNodeError,
+  UnknownNodeDeclarationError,
+  InvalidNodeConfigError,
+  NodeInvocationFailure,
+  UnroutedEmitError,
+  FlowCycleError,
+  DanglingWireError,
+  UnreachableNodesError,
+  type FlowLoadError,
+} from "./errors.ts";
+export type {
+  FlowSchema,
+  Message,
+  MetadataSchema,
+  NodeSchema,
+  RetryPolicySchema,
+  ExponentialBackoffSchema,
+  WireSchema,
 } from "./schema.ts";

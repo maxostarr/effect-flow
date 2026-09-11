@@ -3,6 +3,13 @@ import * as Wf from "effect/unstable/workflow";
 import * as WorkflowEngineModule from "effect/unstable/workflow/WorkflowEngine";
 import * as AdapterModule from "./adapter.ts";
 import type { NodeContext, NodeDeclaration } from "./declaration.ts";
+import {
+  InvalidNodeConfigError,
+  type FlowLoadError,
+  NodeInvocationFailure,
+  UnroutedEmitError,
+  UnknownNodeDeclarationError,
+} from "./errors.ts";
 import * as SchemaModule from "./schema.ts";
 import * as ValidationModule from "./validation.ts";
 
@@ -20,42 +27,6 @@ export interface LoadedFlow {
   readonly wires: ReadonlyArray<SchemaModule.WireSchema>;
 }
 
-export class UnknownNodeDeclarationError extends Schema.TaggedError<UnknownNodeDeclarationError>()(
-  "UnknownNodeDeclarationError",
-  {
-    nodeId: Schema.String,
-    nodeType: Schema.String,
-  },
-) {}
-
-export class InvalidNodeConfigError extends Schema.TaggedError<InvalidNodeConfigError>()(
-  "InvalidNodeConfigError",
-  {
-    nodeId: Schema.String,
-    field: Schema.String,
-    message: Schema.String,
-  },
-) {}
-
-export class NodeInvocationFailure extends Schema.TaggedError<NodeInvocationFailure>()(
-  "NodeInvocationFailure",
-  {
-    nodeId: Schema.String,
-    messageId: Schema.String,
-    cause: Schema.Any,
-  },
-) {}
-
-/** Emitted on a named port with no Wire carries it onward; routes mis-routing loudly. */
-export class UnroutedEmitError extends Schema.TaggedError<UnroutedEmitError>()(
-  "UnroutedEmitError",
-  {
-    nodeId: Schema.String,
-    messageId: Schema.String,
-    port: Schema.String,
-  },
-) {}
-
 export type EmittedRecord = {
   port: string;
   body: unknown;
@@ -69,16 +40,18 @@ type AttemptEffect = Effect.Effect<
   EngineRequires
 >;
 
-export type FlowLoadError =
-  | SchemaModule.InvalidFlowError
-  | UnknownNodeDeclarationError
-  | InvalidNodeConfigError
-  | ValidationModule.FlowTopologyError;
+export type { FlowLoadError } from "./errors.ts";
 
 export interface EngineOptions {
   readonly adapter: AdapterModule.FlowPersistence;
-  readonly declarations: ReadonlyArray<NodeDeclaration<unknown>>;
+  readonly declarations: ReadonlyArray<NodeDeclaration<any>>;
   readonly resources?: Layer.Layer<any> | undefined;
+  /**
+   * WorkflowEngine layer backing Runs. Defaults to the in-memory engine; a host
+   * wanting restart-safe Runs injects a persistent engine here (workflow
+   * executions, activities, and durable clocks then survive and replay).
+   */
+  readonly workflowEngine?: Layer.Layer<Wf.WorkflowEngine.WorkflowEngine> | undefined;
 }
 
 export interface FlowEngine {
@@ -175,56 +148,85 @@ const deliverMessage = Effect.fnUntraced(function* (
   const binding = loaded.nodes.get(instanceId);
   if (!binding) return [];
 
-  const runAttempt = (attemptIndex: number): AttemptEffect => {
-    const emitted: Array<EmittedRecord> = [];
-    const ctx: NodeContext<never> = {
-      runId,
-      node: binding.node,
-      config: binding.config,
-      message,
-      service,
-      sleep: (durationMs) =>
-        // Durable wait lives HERE, outside the Node body's own clock:
-        // DurableClock.sleep defers to the WorkflowEngine (durable clock for
-        // long waits), so a durable adapter can restart-resume past the pause.
-        Wf.DurableClock.sleep({
-          name: `${instanceId}/${message.id}/sleep-${attemptIndex}`,
-          duration: `${durationMs} millis`,
-        }) as unknown as Effect.Effect<void, never, never>,
-      emit: (body, port = SchemaModule.DEFAULT_PORT) => {
-        emitted.push({ port, body });
-      },
-    };
-    const activity = Wf.Activity.make({
-      name: `${instanceId}/${message.id}/attempt-${attemptIndex}`,
-      success: Schema.Array(Schema.Struct({ port: Schema.String, body: Schema.Unknown })),
-      error: Schema.Any,
-      // The runtime hands Node body errors to us wrapped; declaring `unknown`
-      // here forces every failure through Schema.Any instead of leaking `any`.
+  const activity = Wf.Activity.make({
+    name: `${instanceId}/${message.id}/attempt`,
+    success: Schema.Array(Schema.Struct({ port: Schema.String, body: Schema.Unknown })),
+    error: Schema.Any,
+    // The runtime hands Node body errors to us wrapped; declaring `unknown`
+    // here forces every failure through Schema.Any instead of leaking `any`.
+    // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
+    execute: Effect.gen(function* () {
+      // Per-attempt identity comes from the retry combinator's CurrentAttempt:
+      // each retry lands on a distinct Activity memoization key, so Node side
+      // effects run once per attempt, never once per replay.
+      const attempt = yield* Wf.Activity.CurrentAttempt;
+      const emitted: Array<EmittedRecord> = [];
+      const ctx: NodeContext<unknown> = {
+        runId,
+        node: binding.node,
+        config: binding.config,
+        message,
+        service,
+        sleep: (durationMs) =>
+          // Durable wait lives HERE, outside the Node body's own clock:
+          // DurableClock.sleep defers to the WorkflowEngine (durable clock for
+          // long waits), so a durable adapter can restart-resume past the pause.
+          Wf.DurableClock.sleep({
+            name: `${instanceId}/${message.id}/sleep-${attempt}`,
+            duration: `${durationMs} millis`,
+          }) as unknown as Effect.Effect<void, never, never>,
+        emit: (body, port = SchemaModule.DEFAULT_PORT) => {
+          emitted.push({ port, body });
+        },
+      };
       // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
-      execute: Effect.gen(function* () {
-        // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
-        yield* binding.declaration.execute(ctx);
-        return emitted.map((entry) => ({ port: entry.port, body: entry.body }));
-      }),
-    }) as unknown as AttemptEffect;
-    return activity.pipe(
-      Effect.mapError(
-        (error): NodeInvocationFailure =>
-          new NodeInvocationFailure({
-            nodeId: instanceId,
-            messageId: message.id,
-            cause: error ?? null,
-          }),
-      ),
-    );
-  };
+      yield* binding.declaration.execute(ctx);
+      return emitted.map((entry) => ({ port: entry.port, body: entry.body }));
+    }),
+  }) as unknown as AttemptEffect;
+
+  const attemptEffect = activity.pipe(
+    Effect.mapError(
+      (error): NodeInvocationFailure =>
+        new NodeInvocationFailure({
+          nodeId: instanceId,
+          messageId: message.id,
+          cause: error ?? null,
+        }),
+    ),
+  );
 
   const policy = binding.node.retry;
 
-  const outcome: AttemptResult = policy
-    ? yield* retryLoop(runAttempt, policy)
-    : yield* Effect.result(runAttempt(1));
+  // Retry Policy mapping onto the Workflow Activity combinator:
+  // - retry condition = the policy's error matcher (`errors` tags, `*` = all);
+  // - schedule = the policy's exponential backoff, taken as a DurableClock
+  //   sleep under a stable Node/Message/attempt name so the pause survives a
+  //   durable-engine restart instead of vanishing with the process;
+  // - maxAttempts = the retry cap (first attempt + maxAttempts - 1 retries);
+  // - non-matching errors stop the schedule and fail on the first attempt;
+  // - no policy means no Activity.retry at all (no engine default retry).
+  // Per-attempt info inside the Node body is pulled via Activity.CurrentAttempt.
+  let backoffAttempt = 0;
+  const outcome: AttemptResult = yield* Effect.result(
+    policy
+      ? attemptEffect.pipe(
+          Wf.Activity.retry({
+            while: (failure) =>
+              failure instanceof NodeInvocationFailure && matchPolicyError(policy, failure.cause)
+                ? Effect.suspend(() => {
+                    backoffAttempt++;
+                    return Wf.DurableClock.sleep({
+                      name: `${instanceId}/${message.id}/backoff-${backoffAttempt}`,
+                      duration: `${Math.round(backoffMs(policy, backoffAttempt))} millis`,
+                    }).pipe(Effect.as(true));
+                  })
+                : Effect.succeed(false),
+            times: Math.max(0, policy.maxAttempts - 1),
+          }),
+        )
+      : attemptEffect,
+  );
 
   const outcomeRecords = Result.isSuccess(outcome)
     ? Option.getOrUndefined(Result.getSuccess(outcome))
@@ -236,12 +238,20 @@ const deliverMessage = Effect.fnUntraced(function* (
       Result.getFailure(outcome),
     );
   }
-  yield* adapter.recordOutput({
-    runId,
-    nodeId: instanceId,
-    message,
-    emitted: outcomeRecords ?? [{ port: SchemaModule.DEAD_LETTER_PORT, body: message.body }],
-  });
+  // recordOutput is a memoized Activity under a stable Run/Node/Message key:
+  // replayed workflows replay the recorded exit instead of re-recording, so
+  // output persistence executes once per Message, not once per replay.
+  yield* Wf.Activity.make({
+    name: `${runId}/${instanceId}/${message.id}/record-output`,
+    success: Schema.Void,
+    error: Schema.Never,
+    execute: adapter.recordOutput({
+      runId,
+      nodeId: instanceId,
+      message,
+      emitted: outcomeRecords ?? [{ port: SchemaModule.DEAD_LETTER_PORT, body: message.body }],
+    }),
+  }) as unknown as Effect.Effect<void, never, never>;
 
   const outgoing: Array<[string, SchemaModule.Message]> = [];
   if (outcomeRecords) {
@@ -289,36 +299,12 @@ const deliverMessage = Effect.fnUntraced(function* (
   return outgoing;
 });
 
-const retryLoop = (
-  runAttempt: (attemptIndex: number) => AttemptEffect,
-  policy: SchemaModule.RetryPolicySchema,
-): Effect.Effect<AttemptResult, never, EngineRequires> =>
-  Effect.suspend(() => {
-    const tags = policy.errors ?? ["*"];
-    const match = (error: unknown): boolean => {
-      const tag = (error as { _tag?: string })?._tag;
-      return tags.includes("*") || (tag !== undefined && tags.includes(tag));
-    };
-    let index = 1;
-    const loop: Effect.Effect<AttemptResult, never, EngineRequires> = Effect.suspend(() =>
-      Effect.gen(function* () {
-        const result = yield* Effect.result(runAttempt(index));
-        if (Result.isSuccess(result)) return result;
-        const rawFailure = Result.getFailure(result);
-        const failure = Option.isOption(rawFailure)
-          ? Option.getOrUndefined(rawFailure)
-          : rawFailure;
-        if (!failure || !(failure instanceof NodeInvocationFailure) || !match(failure.cause)) {
-          return result;
-        }
-        index++;
-        if (index > policy.maxAttempts) return result;
-        yield* Effect.sleep(Math.round(backoffMs(policy, index - 1)));
-        return yield* loop;
-      }),
-    );
-    return loop;
-  });
+/** Maps the policy's error matcher (`errors` tags, `*` wildcard) onto a cause. */
+const matchPolicyError = (policy: SchemaModule.RetryPolicySchema, error: unknown): boolean => {
+  const tags = policy.errors ?? ["*"];
+  const tag = (error as { _tag?: string })?._tag;
+  return tags.includes("*") || (tag !== undefined && tags.includes(tag));
+};
 
 export const backoffMs = (policy: SchemaModule.RetryPolicySchema, attempt: number): number => {
   const { initialMs, multiplier = 2 } = policy.backoff;
@@ -443,5 +429,8 @@ const makeEngineService = (options: EngineOptions) =>
 export const layerFlowEngine = (options: EngineOptions): Layer.Layer<FlowEngineService> =>
   Layer.effect(
     FlowEngineService,
-    Effect.provide(makeEngineService(options), WorkflowEngineModule.layerMemory),
+    Effect.provide(
+      makeEngineService(options),
+      options.workflowEngine ?? WorkflowEngineModule.layerMemory,
+    ),
   );
