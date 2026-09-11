@@ -1,0 +1,12 @@
+{
+  "name": "@effect-flow/ui",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.8.6",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}

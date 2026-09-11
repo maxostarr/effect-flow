@@ -1,0 +1,13 @@
+{
+  "flowVersion": "1",
+  "metadata": { "name": "demo", "description": "inject -> map -> debug" },
+  "nodes": [
+    { "id": "n1", "type": "inject", "position": { "x": 0, "y": 100 }, "config": { "payload": 21 } },
+    { "id": "n2", "type": "map", "position": { "x": 260, "y": 100 }, "config": { "mult": 2 } },
+    { "id": "n3", "type": "debug", "position": { "x": 520, "y": 100 }, "config": {} }
+  ],
+  "wires": [
+    { "source": "n1", "target": "n2" },
+    { "source": "n2", "target": "n3" }
+  ]
+}
