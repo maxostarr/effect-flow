@@ -661,3 +661,65 @@ test("distinct messages at the same node are not collapsed by dedupe", async () 
   );
   expect(record.outputs.length).toBe(2);
 });
+
+describe("deterministic message IDs", () => {
+  const wait = defineNode("wait", Schema.Struct({ ms: Schema.Number }), (ctx) =>
+    Effect.gen(function* () {
+      yield* Effect.sleep(`${ctx.config.ms} millis`);
+      ctx.emit(ctx.message.body);
+    }),
+  );
+
+  const fanOut = (slowMs: number, fastMs: number) => ({
+    flowVersion: "1",
+    nodes: [
+      { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 2 } },
+      { id: "n2", type: "wait", position: { x: 0, y: 0 }, config: { ms: slowMs } },
+      { id: "n3", type: "wait", position: { x: 0, y: 0 }, config: { ms: fastMs } },
+      { id: "n4", type: "debug", position: { x: 0, y: 0 }, config: {} },
+      { id: "n5", type: "debug", position: { x: 0, y: 0 }, config: {} },
+    ],
+    wires: [
+      { source: "n1", target: "n2" },
+      { source: "n1", target: "n3" },
+      { source: "n2", target: "n4" },
+      { source: "n3", target: "n5" },
+    ],
+  });
+
+  const idsByNode = (record: {
+    runId: string;
+    outputs: ReadonlyArray<{ nodeId: string; message: { id: string } }>;
+  }) => {
+    const shape: Record<string, string[]> = {};
+    for (const out of record.outputs) {
+      const id = out.message.id.split(record.runId).join("<run>");
+      (shape[out.nodeId] ??= []).push(id);
+    }
+    for (const key of Object.keys(shape)) shape[key]!.sort();
+    return shape;
+  };
+
+  const start = (flow: ReturnType<typeof fanOut>) =>
+    Effect.runPromise(
+      Effect.provide(
+        Effect.gen(function* () {
+          const engine = yield* FlowEngineService;
+          const loaded = yield* engine.loadFlow(flow);
+          return yield* engine.startRun(loaded);
+        }),
+        layerFlowEngine({
+          adapter: InMemoryFlowPersistence(),
+          declarations: [injectNode, wait, debugNode],
+        }),
+      ),
+    );
+
+  test("same Flow yields the same Message IDs regardless of branch timing", async () => {
+    const branchAFirst = idsByNode(await start(fanOut(40, 1)));
+    const branchBFirst = idsByNode(await start(fanOut(1, 40)));
+    expect(branchBFirst.n4).toHaveLength(1);
+    expect(branchAFirst.n4).toEqual(branchBFirst.n4);
+    expect(branchAFirst.n5).toEqual(branchBFirst.n5);
+  });
+});

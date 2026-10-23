@@ -23,5 +23,11 @@ test("Run paused on a delay resumes in a new process after a crash", async () =>
 
   const resumed = await session("resume", filename, runId);
   expect(resumed.stderr).toBe("");
-  expect(JSON.parse(resumed.stdout)).toEqual({ runId, nodes: ["n1", "n2", "n3"] });
+  expect(JSON.parse(resumed.stdout)).toEqual({
+    runId,
+    nodes: ["n1", "n2", "n3", "n4", "n5"],
+  });
+  // n2 ran before the crash and must replay from its memoized result, not re-run
+  const executions = (await Bun.file(`${filename}.log`).text()).trim().split("\n").sort();
+  expect(executions).toEqual(["n2", "n5"]);
 });

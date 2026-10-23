@@ -163,15 +163,27 @@ interface RunSources {
   readonly adapter: AdapterModule.FlowPersistence;
   readonly service: NodeContext<never>["service"];
   readonly runId: string;
-  readonly nextMessageId: () => string;
 }
+
+/**
+ * Message IDs are a pure function of the causal path: the parent Message, the
+ * emitting Node, the port, the emit ordinal, and the wire index. Scheduling
+ * order cannot change them, so a resumed Run replays the same activity keys.
+ */
+const childMessageId = (
+  parentId: string,
+  nodeId: string,
+  port: string,
+  emitIndex: number,
+  wireIndex: number,
+): string => `${parentId}/${nodeId}:${port}:${emitIndex}:${wireIndex}`;
 
 const deliverMessage = Effect.fnUntraced(function* (
   sources: RunSources,
   instanceId: string,
   message: SchemaModule.Message,
 ): Effect.fn.Return<ReadonlyArray<[string, SchemaModule.Message]>, never, EngineRequires> {
-  const { loaded, adapter, service, runId, nextMessageId } = sources;
+  const { loaded, adapter, service, runId } = sources;
   const binding = loaded.nodes.get(instanceId);
   if (!binding) return [];
 
@@ -282,7 +294,7 @@ const deliverMessage = Effect.fnUntraced(function* (
 
   const outgoing: Array<[string, SchemaModule.Message]> = [];
   if (outcomeRecords) {
-    for (const record of outcomeRecords) {
+    for (const [emitIndex, record] of outcomeRecords.entries()) {
       if (
         record.port !== SchemaModule.DEFAULT_PORT &&
         !loaded.wires.some(
@@ -300,26 +312,36 @@ const deliverMessage = Effect.fnUntraced(function* (
           }),
         );
       }
-      for (const wire of loaded.wires) {
+      for (const [wireIndex, wire] of loaded.wires.entries()) {
         if (
           wire.source === instanceId &&
           (wire.port ?? SchemaModule.DEFAULT_PORT) === record.port
         ) {
-          outgoing.push([wire.target, { id: nextMessageId(), body: record.body }]);
+          const id = childMessageId(message.id, instanceId, record.port, emitIndex, wireIndex);
+          outgoing.push([wire.target, { id, body: record.body }]);
         }
       }
     }
   } else {
-    const deadLetterWires = loaded.wires.filter(
-      (wire) => wire.source === instanceId && wire.port === SchemaModule.DEAD_LETTER_PORT,
+    const deadLetterWires = loaded.wires.flatMap((wire, wireIndex) =>
+      wire.source === instanceId && wire.port === SchemaModule.DEAD_LETTER_PORT
+        ? [{ wire, wireIndex }]
+        : [],
     );
     if (deadLetterWires.length === 0) {
       yield* Effect.log(
         `message '${message.id}' dropped at node '${instanceId}' (dead letter unwired)`,
       );
     } else {
-      for (const wire of deadLetterWires) {
-        outgoing.push([wire.target, { id: nextMessageId(), body: message.body }]);
+      for (const { wire, wireIndex } of deadLetterWires) {
+        const id = childMessageId(
+          message.id,
+          instanceId,
+          SchemaModule.DEAD_LETTER_PORT,
+          0,
+          wireIndex,
+        );
+        outgoing.push([wire.target, { id, body: message.body }]);
       }
     }
   }
@@ -371,9 +393,13 @@ const makeEngineService = (options: EngineOptions) =>
       } else {
         outgoing = yield* deliverMessage(sources, instanceId, message);
       }
-      for (const [nextId, nextMessage] of outgoing) {
-        yield* walkMessage(sources, gates, nextId, nextMessage);
-      }
+      // Fan-out siblings walk concurrently: a slow branch must not hold up
+      // the other wires leaving the same Node.
+      yield* Effect.forEach(
+        outgoing,
+        ([nextId, nextMessage]) => walkMessage(sources, gates, nextId, nextMessage),
+        { concurrency: "unbounded", discard: true },
+      );
     });
 
     const runFlowMessages = Effect.fnUntraced(function* (
@@ -395,15 +421,13 @@ const makeEngineService = (options: EngineOptions) =>
       readonly flow: SchemaModule.FlowSchema;
     }): Effect.fn.Return<void, never, EngineRequires> {
       const loaded = yield* Effect.orDie(bindFlow(declarations, payload.flow));
-      let counter = 0;
-      const nextMessageId = () => `${payload.runId}#${counter++}`;
       const frontier: Array<[string, SchemaModule.Message]> = [...loaded.nodes.values()]
         .filter((binding) => SchemaModule.isEntryNode(binding.node))
-        .map((binding) => [binding.node.id, { id: nextMessageId(), body: undefined as unknown }]);
-      yield* runFlowMessages(
-        { loaded, adapter, service, runId: payload.runId, nextMessageId },
-        frontier,
-      );
+        .map((binding) => [
+          binding.node.id,
+          { id: `${payload.runId}/${binding.node.id}`, body: undefined as unknown },
+        ]);
+      yield* runFlowMessages({ loaded, adapter, service, runId: payload.runId }, frontier);
     });
 
     yield* workflowEngine.register(runWorkflow, (payload, _executionId) => handler(payload));
