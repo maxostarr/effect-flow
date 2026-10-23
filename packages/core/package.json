@@ -5,6 +5,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@effect/sql-sqlite-bun": "4.0.0-rc.113",
     "effect": "^4.0.0-rc.113"
   },
   "devDependencies": {

@@ -37,3 +37,4 @@ export type {
   ExponentialBackoffSchema,
   WireSchema,
 } from "./schema.ts";
+export { SqliteFlowPersistence, layerDurableWorkflowEngine } from "./durable.ts";

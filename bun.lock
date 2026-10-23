@@ -24,6 +24,7 @@
     "packages/core": {
       "name": "@effect-flow/core",
       "dependencies": {
+        "@effect/sql-sqlite-bun": "4.0.0-rc.113",
         "effect": "^4.0.0-rc.113",
       },
       "devDependencies": {
@@ -53,6 +54,8 @@
     "@effect-flow/nodes-basic": ["@effect-flow/nodes-basic@workspace:packages/nodes-basic"],
 
     "@effect-flow/ui": ["@effect-flow/ui@workspace:packages/ui"],
+
+    "@effect/sql-sqlite-bun": ["@effect/sql-sqlite-bun@4.0.0-rc.113", "", { "peerDependencies": { "effect": "^4.0.0-rc.113" } }, "sha512-gh3k27MMq/MDqPqpQYoNw1BgXgPIxZtQQsF9W321Ml20lbIzEBdOA6LgEEbA1sX7wy8/710bDBgXvDcm27ioAA=="],
 
     "@effect/tsgo": ["@effect/tsgo@0.45.0", "", { "optionalDependencies": { "@effect/tsgo-darwin-arm64": "0.45.0", "@effect/tsgo-darwin-x64": "0.45.0", "@effect/tsgo-linux-arm": "0.45.0", "@effect/tsgo-linux-arm64": "0.45.0", "@effect/tsgo-linux-x64": "0.45.0", "@effect/tsgo-win32-arm64": "0.45.0", "@effect/tsgo-win32-x64": "0.45.0" }, "bin": { "effect-tsgo": "dist/effect-tsgo.cjs" } }, "sha512-gPG0ixVHgtYBUe5DbKX9vzHlhqd9+ZEfs4m/XWy0808av0A2XqMzaG3F5rnPBN7EUJRPlo9TluIi8WHx/pBV+A=="],
 
