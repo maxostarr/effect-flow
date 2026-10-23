@@ -489,7 +489,7 @@ describe("per-node serialization opt-in", () => {
  */
 const makeSpyEngine = () => {
   const registeredTags: Array<string> = [];
-  const executedPayloads: Array<{ runId: string; flowId: string }> = [];
+  const executedPayloads: Array<{ runId: string }> = [];
   const spy = Layer.effect(
     Wf.WorkflowEngine.WorkflowEngine,
     Effect.map(
@@ -509,7 +509,7 @@ const makeSpyEngine = () => {
             workflow: Parameters<typeof inner.execute>[0],
             options: Parameters<typeof inner.execute>[1],
           ) => {
-            executedPayloads.push(options.payload as { runId: string; flowId: string });
+            executedPayloads.push(options.payload as { runId: string });
             // eslint-disable-next-line effecttsgo/any-unknown-in-error-context
             return inner.execute(workflow, options);
           },

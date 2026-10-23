@@ -21,7 +21,6 @@ export interface NodeBinding {
 }
 
 export interface LoadedFlow {
-  readonly flowId: string;
   readonly flow: SchemaModule.FlowSchema;
   readonly nodes: ReadonlyMap<string, NodeBinding>;
   readonly wires: ReadonlyArray<SchemaModule.WireSchema>;
@@ -54,10 +53,21 @@ export interface EngineOptions {
   readonly workflowEngine?: Layer.Layer<Wf.WorkflowEngine.WorkflowEngine> | undefined;
 }
 
+export interface StartRunOptions {
+  /**
+   * Stable Run identity. Starting again with the same `runId` resumes that Run
+   * under a durable WorkflowEngine instead of starting a new one.
+   */
+  readonly runId?: string | undefined;
+}
+
 export interface FlowEngine {
   readonly adapter: AdapterModule.FlowPersistence;
   readonly loadFlow: (json: unknown) => Effect.Effect<LoadedFlow, FlowLoadError>;
-  readonly startRun: (flow: LoadedFlow) => Effect.Effect<AdapterModule.RunRecord>;
+  readonly startRun: (
+    flow: LoadedFlow,
+    options?: StartRunOptions,
+  ) => Effect.Effect<AdapterModule.RunRecord>;
 }
 
 export class FlowEngineService extends Context.Service<FlowEngineService, FlowEngine>()(
@@ -77,9 +87,11 @@ const firstIssuePath = (issue: unknown): ReadonlyArray<PropertyKey> => {
   return path;
 };
 
+// The payload carries the Flow itself so a restarted host can resume a Run
+// without any in-memory registry of loaded Flows.
 const RunPayload = Schema.Struct({
   runId: Schema.String,
-  flowId: Schema.String,
+  flow: SchemaModule.Flow,
 });
 
 const runWorkflow = Wf.Workflow.make("effect-flow/Run", {
@@ -129,6 +141,21 @@ const resolveNode = (
       invocations: node.invocations ?? declaration.invocations ?? "concurrent",
     };
   });
+
+const bindFlow = (
+  declarations: ReadonlyMap<string, NodeDeclaration<unknown>>,
+  flow: SchemaModule.FlowSchema,
+): Effect.Effect<LoadedFlow, FlowLoadError> =>
+  Effect.map(
+    Effect.forEach(flow.nodes, (node) => resolveNode(declarations, node), { concurrency: 1 }),
+    (bindings) => {
+      const nodes = new Map<string, NodeBinding>();
+      for (const binding of bindings) {
+        nodes.set(binding.node.id, binding);
+      }
+      return { flow, nodes, wires: flow.wires };
+    },
+  );
 
 /** Run-scoped plumbing shared by every Message walking the Flow against Nodes. */
 interface RunSources {
@@ -322,9 +349,6 @@ const makeEngineService = (options: EngineOptions) =>
     )) as Context.Context<unknown>;
     const service = makeNodeService(resources);
 
-    let flowCounter = 0;
-    const loadedFlows = new Map<string, LoadedFlow>();
-
     const workflowEngine = yield* Wf.WorkflowEngine.WorkflowEngine;
     const walkMessage = Effect.fnUntraced(function* (
       sources: RunSources,
@@ -368,10 +392,9 @@ const makeEngineService = (options: EngineOptions) =>
 
     const handler = Effect.fnUntraced(function* (payload: {
       readonly runId: string;
-      readonly flowId: string;
+      readonly flow: SchemaModule.FlowSchema;
     }): Effect.fn.Return<void, never, EngineRequires> {
-      const loaded = loadedFlows.get(payload.flowId);
-      if (!loaded) return yield* Effect.die(`unknown flowId: ${payload.flowId}`);
+      const loaded = yield* Effect.orDie(bindFlow(declarations, payload.flow));
       let counter = 0;
       const nextMessageId = () => `${payload.runId}#${counter++}`;
       const frontier: Array<[string, SchemaModule.Message]> = [...loaded.nodes.values()]
@@ -386,35 +409,19 @@ const makeEngineService = (options: EngineOptions) =>
     yield* workflowEngine.register(runWorkflow, (payload, _executionId) => handler(payload));
 
     const loadFlow: FlowEngine["loadFlow"] = (json) =>
-      Effect.suspend(() => {
-        const flowId = `flow-${flowCounter++}`;
-        return SchemaModule.parseFlow(json).pipe(
-          Effect.flatMap((flow) =>
-            Effect.flatMap(ValidationModule.validateTopology(flow), () =>
-              Effect.map(
-                Effect.forEach(flow.nodes, (node) => resolveNode(declarations, node), {
-                  concurrency: 1,
-                }),
-                (bindings) => {
-                  const nodes = new Map<string, NodeBinding>();
-                  for (const binding of bindings) {
-                    nodes.set(binding.node.id, binding);
-                  }
-                  const loaded: LoadedFlow = { flowId, flow, nodes, wires: flow.wires };
-                  return loaded;
-                },
-              ),
-            ),
+      SchemaModule.parseFlow(json).pipe(
+        Effect.flatMap((flow) =>
+          Effect.flatMap(ValidationModule.validateTopology(flow), () =>
+            bindFlow(declarations, flow),
           ),
-        );
-      });
+        ),
+      );
 
-    const startRun: FlowEngine["startRun"] = (flow) =>
+    const startRun: FlowEngine["startRun"] = (flow, options) =>
       Effect.gen(function* () {
-        const runId = `run-${crypto.randomUUID()}`;
-        loadedFlows.set(flow.flowId, flow);
+        const runId = options?.runId ?? `run-${crypto.randomUUID()}`;
         yield* runWorkflow
-          .execute({ runId, flowId: flow.flowId })
+          .execute({ runId, flow: flow.flow })
           .pipe(
             Effect.scoped,
             Effect.provideService(Wf.WorkflowEngine.WorkflowEngine, workflowEngine),
@@ -427,10 +434,8 @@ const makeEngineService = (options: EngineOptions) =>
   });
 
 export const layerFlowEngine = (options: EngineOptions): Layer.Layer<FlowEngineService> =>
-  Layer.effect(
-    FlowEngineService,
-    Effect.provide(
-      makeEngineService(options),
-      options.workflowEngine ?? WorkflowEngineModule.layerMemory,
-    ),
+  Layer.effect(FlowEngineService, makeEngineService(options)).pipe(
+    // Layer.provide (not Effect.provide) keeps the WorkflowEngine's scope alive
+    // for the engine's lifetime; a durable engine's runners shut down otherwise.
+    Layer.provide(options.workflowEngine ?? WorkflowEngineModule.layerMemory),
   );
