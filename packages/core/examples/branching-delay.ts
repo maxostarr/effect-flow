@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { delayNode, injectNode, mapNode, mergeNode, switchNode } from "@effect-flow/nodes-basic";
-import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "@effect-flow/core";
+import { FlowEngineService, layerInMemoryPersistence, layerFlowEngine } from "@effect-flow/core";
 
 const delayMs = Number(process.env.DEMO_DELAY_MS ?? 30_000);
 
@@ -53,7 +53,7 @@ await Effect.runPromise(
   Effect.provide(
     program,
     layerFlowEngine({
-      adapter: InMemoryFlowPersistence(),
+      persistence: layerInMemoryPersistence,
       declarations: [injectNode, switchNode, delayNode, mergeNode, mapNode],
     }),
   ),

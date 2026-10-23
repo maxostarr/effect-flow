@@ -1,7 +1,8 @@
-import { Context, Deferred, Effect, Layer, Option, Result, Schema } from "effect";
+import { Context, Crypto, Deferred, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Wf from "effect/workflow";
 import * as WorkflowEngineModule from "effect/workflow/WorkflowEngine";
 import * as AdapterModule from "./adapter.ts";
+import { layerWebCrypto } from "./crypto.ts";
 import type { NodeContext, NodeDeclaration } from "./declaration.ts";
 import {
   InvalidNodeConfigError,
@@ -42,7 +43,8 @@ type AttemptEffect = Effect.Effect<
 export type { FlowLoadError } from "./errors.ts";
 
 export interface EngineOptions {
-  readonly adapter: AdapterModule.FlowPersistence;
+  /** Output persistence. Any `FlowPersistence` layer; see `layerInMemoryPersistence`. */
+  readonly persistence: Layer.Layer<AdapterModule.FlowPersistence>;
   readonly declarations: ReadonlyArray<NodeDeclaration<any>>;
   readonly resources?: Layer.Layer<any> | undefined;
   /**
@@ -51,6 +53,8 @@ export interface EngineOptions {
    * executions, activities, and durable clocks then survive and replay).
    */
   readonly workflowEngine?: Layer.Layer<Wf.WorkflowEngine.WorkflowEngine> | undefined;
+  /** Randomness for Run IDs. Defaults to Web Crypto. */
+  readonly crypto?: Layer.Layer<Crypto.Crypto> | undefined;
 }
 
 export interface StartRunOptions {
@@ -62,7 +66,6 @@ export interface StartRunOptions {
 }
 
 export interface FlowEngine {
-  readonly adapter: AdapterModule.FlowPersistence;
   readonly loadFlow: (json: unknown) => Effect.Effect<LoadedFlow, FlowLoadError>;
   readonly startRun: (
     flow: LoadedFlow,
@@ -160,7 +163,7 @@ const bindFlow = (
 /** Run-scoped plumbing shared by every Message walking the Flow against Nodes. */
 interface RunSources {
   readonly loaded: LoadedFlow;
-  readonly adapter: AdapterModule.FlowPersistence;
+  readonly adapter: AdapterModule.FlowPersistenceShape;
   readonly service: NodeContext<never>["service"];
   readonly runId: string;
 }
@@ -362,7 +365,8 @@ export const backoffMs = (policy: SchemaModule.RetryPolicySchema, attempt: numbe
 
 const makeEngineService = (options: EngineOptions) =>
   Effect.gen(function* () {
-    const adapter = options.adapter;
+    const adapter = yield* AdapterModule.FlowPersistence;
+    const cryptoService = yield* Crypto.Crypto;
     const declarations = new Map<string, NodeDeclaration<unknown>>(
       options.declarations.map((declaration) => [declaration.type, declaration]),
     );
@@ -443,7 +447,7 @@ const makeEngineService = (options: EngineOptions) =>
 
     const startRun: FlowEngine["startRun"] = (flow, options) =>
       Effect.gen(function* () {
-        const runId = options?.runId ?? `run-${crypto.randomUUID()}`;
+        const runId = options?.runId ?? `run-${yield* randomHex(cryptoService, 16)}`;
         yield* runWorkflow
           .execute({ runId, flow: flow.flow })
           .pipe(
@@ -454,12 +458,23 @@ const makeEngineService = (options: EngineOptions) =>
         return Option.getOrThrow(record);
       });
 
-    return { adapter, loadFlow, startRun } satisfies FlowEngine;
+    return { loadFlow, startRun } satisfies FlowEngine;
   });
+
+const randomHex = (cryptoService: Crypto.Crypto, bytes: number) =>
+  Effect.map(cryptoService.randomBytes(bytes).pipe(Effect.orDie), (buf) =>
+    Array.from(buf, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  );
 
 export const layerFlowEngine = (options: EngineOptions): Layer.Layer<FlowEngineService> =>
   Layer.effect(FlowEngineService, makeEngineService(options)).pipe(
     // Layer.provide (not Effect.provide) keeps the WorkflowEngine's scope alive
     // for the engine's lifetime; a durable engine's runners shut down otherwise.
-    Layer.provide(options.workflowEngine ?? WorkflowEngineModule.layerMemory),
+    Layer.provide(
+      Layer.mergeAll(
+        options.workflowEngine ?? WorkflowEngineModule.layerMemory,
+        options.persistence,
+        options.crypto ?? layerWebCrypto,
+      ),
+    ),
   );

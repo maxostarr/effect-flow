@@ -2,13 +2,22 @@
   "name": "@effect-flow/core",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./sqlite": "./src/sqlite.ts"
   },
   "dependencies": {
-    "@effect/sql-sqlite-bun": "^4.0.6",
     "effect": "^4.0.6"
   },
   "devDependencies": {
-    "@effect-flow/nodes-basic": "workspace:*"
+    "@effect-flow/nodes-basic": "workspace:*",
+    "@effect/sql-sqlite-bun": "^4.0.6"
+  },
+  "peerDependencies": {
+    "@effect/sql-sqlite-bun": "^4.0.6"
+  },
+  "peerDependenciesMeta": {
+    "@effect/sql-sqlite-bun": {
+      "optional": true
+    }
   }
 }

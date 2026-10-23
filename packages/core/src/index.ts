@@ -7,7 +7,14 @@ export {
   backoffMs,
 } from "./engine.ts";
 export { defineNode, type NodeContext, type NodeDeclaration } from "./declaration.ts";
-export { InMemoryFlowPersistence, type FlowPersistence } from "./adapter.ts";
+export {
+  FlowPersistence,
+  layerInMemoryPersistence,
+  type NodeOutput,
+  type RunRecord,
+} from "./adapter.ts";
+export { layerSqlFlowPersistence } from "./sql-persistence.ts";
+export { layerWebCrypto } from "./crypto.ts";
 export {
   parseFlow,
   Flow,
@@ -37,4 +44,4 @@ export type {
   ExponentialBackoffSchema,
   WireSchema,
 } from "./schema.ts";
-export { SqliteFlowPersistence, layerDurableWorkflowEngine } from "./durable.ts";
+export { layerDurableWorkflowEngine, type DurableWorkflowOptions } from "./durable.ts";

@@ -1,69 +1,43 @@
-import { Crypto, Effect, Layer, Option } from "effect";
-import { SqliteClient } from "@effect/sql-sqlite-bun";
-import { Database } from "bun:sqlite";
+import { Crypto, Layer } from "effect";
+import type * as SqlClient from "effect/sql/SqlClient";
 import * as Wf from "effect/workflow";
 import * as ClusterWorkflowEngine from "effect/cluster/ClusterWorkflowEngine";
+import * as MessageStorage from "effect/cluster/MessageStorage";
+import * as Sharding from "effect/cluster/Sharding";
 import * as SingleRunner from "effect/cluster/SingleRunner";
-import type { FlowPersistence, NodeOutput, RunRecord } from "./adapter.ts";
+import { layerWebCrypto } from "./crypto.ts";
 
-/**
- * SQLite-backed output persistence. Outputs are kept in insertion order per
- * Run and deduplicated on the Run/Node/Message key.
- */
-export const SqliteFlowPersistence = (filename: string): FlowPersistence => {
-  const db = new Database(filename, { create: true });
-  db.run(`
-    CREATE TABLE IF NOT EXISTS flow_outputs (
-      run_id TEXT NOT NULL,
-      node_id TEXT NOT NULL,
-      message_id TEXT NOT NULL,
-      output TEXT NOT NULL,
-      PRIMARY KEY (run_id, node_id, message_id)
-    )
-  `);
-  return {
-    recordOutput: (output: NodeOutput) =>
-      Effect.sync(() => {
-        db.run(
-          "INSERT OR IGNORE INTO flow_outputs (run_id, node_id, message_id, output) VALUES (?, ?, ?, ?)",
-          [output.runId, output.nodeId, output.message.id, JSON.stringify(output)],
-        );
-      }),
-    getRun: (runId) =>
-      Effect.sync(() => {
-        const rows = db
-          .query<{ output: string }, [string]>(
-            "SELECT output FROM flow_outputs WHERE run_id = ? ORDER BY rowid",
-          )
-          .all(runId);
-        if (rows.length === 0) return Option.none();
-        const outputs = rows.map((row) => JSON.parse(row.output) as NodeOutput);
-        return Option.some({ runId, outputs } satisfies RunRecord);
-      }),
-  };
-};
+export interface DurableWorkflowOptions {
+  /** SQL database holding workflow state. Any infallible `SqlClient` driver works. */
+  readonly sql: Layer.Layer<SqlClient.SqlClient>;
+  /** Randomness and digests for workflow IDs. Defaults to Web Crypto. */
+  readonly crypto?: Layer.Layer<Crypto.Crypto> | undefined;
+  /**
+   * Sharding and message storage for the cluster that runs the workflows.
+   * Defaults to a single in-process runner with SQL-backed storage; supply a
+   * multi-runner setup here to scale out.
+   */
+  readonly cluster?:
+    | Layer.Layer<
+        Sharding.Sharding | MessageStorage.MessageStorage,
+        never,
+        SqlClient.SqlClient | Crypto.Crypto
+      >
+    | undefined;
+}
 
-const CryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => crypto.getRandomValues(new Uint8Array(size)),
-    digest: (algorithm, data) =>
-      Effect.promise(
-        async () => new Uint8Array(await crypto.subtle.digest(algorithm, new Uint8Array(data))),
-      ),
-  }),
-);
+const singleRunnerCluster = Layer.orDie(SingleRunner.layer({ runnerStorage: "sql" }));
 
 /**
  * WorkflowEngine whose Run state (activities, durable clocks, executions) lives
- * in a SQLite file, so a Run paused on a `delay` resumes after a process restart.
- * Pass it as `workflowEngine` to `layerFlowEngine`.
+ * in the host's SQL database, so a Run paused on a `delay` resumes after a
+ * process restart. Pass the result as `workflowEngine` to `layerFlowEngine`.
  */
 export const layerDurableWorkflowEngine = (
-  filename: string,
+  options: DurableWorkflowOptions,
 ): Layer.Layer<Wf.WorkflowEngine.WorkflowEngine> =>
   ClusterWorkflowEngine.layer.pipe(
-    Layer.provide(SingleRunner.layer({ runnerStorage: "sql" })),
-    Layer.provide(Layer.merge(SqliteClient.layer({ filename }), CryptoLayer)),
+    Layer.provide(options.cluster ?? singleRunnerCluster),
+    Layer.provide(Layer.merge(options.sql, options.crypto ?? layerWebCrypto)),
     Layer.orDie,
   );

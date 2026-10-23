@@ -1,18 +1,20 @@
 import { appendFileSync } from "node:fs";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { debugNode, delayNode, injectNode } from "@effect-flow/nodes-basic";
 import {
   FlowEngineService,
-  SqliteFlowPersistence,
-  layerDurableWorkflowEngine,
   defineNode,
+  layerDurableWorkflowEngine,
   layerFlowEngine,
+  layerSqlFlowPersistence,
 } from "../../src/index.ts";
+import { layerSqliteSqlClient } from "../../src/sqlite.ts";
 
 // One engine process. `crash` starts the Run and kills the process mid-delay on
 // one fan-out branch; `resume` starts a fresh process that re-runs the same
 // runId to completion.
 const [mode, filename, runId] = process.argv.slice(2) as [string, string, string];
+const sql = layerSqliteSqlClient(filename);
 
 // Side-effect tally: one line per execution, so a replayed Node shows up twice.
 const tapNode = defineNode("tap", Schema.Struct({ mult: Schema.Number }), (ctx) =>
@@ -57,9 +59,9 @@ await Effect.runPromise(
   Effect.provide(
     program,
     layerFlowEngine({
-      adapter: SqliteFlowPersistence(filename),
+      persistence: layerSqlFlowPersistence.pipe(Layer.provide(sql)),
       declarations: [injectNode, tapNode, delayNode, debugNode],
-      workflowEngine: layerDurableWorkflowEngine(filename),
+      workflowEngine: layerDurableWorkflowEngine({ sql }),
     }),
   ),
 );

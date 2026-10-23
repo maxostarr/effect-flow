@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { injectNode } from "@effect-flow/nodes-basic";
 import {
   FlowEngineService,
-  InMemoryFlowPersistence,
+  layerInMemoryPersistence,
   defineNode,
   layerFlowEngine,
 } from "@effect-flow/core";
@@ -64,7 +64,7 @@ await Effect.runPromise(
   Effect.provide(
     program,
     layerFlowEngine({
-      adapter: InMemoryFlowPersistence(),
+      persistence: layerInMemoryPersistence,
       declarations: [injectNode, tally],
     }),
   ),

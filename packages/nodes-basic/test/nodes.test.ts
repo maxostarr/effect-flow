@@ -1,17 +1,22 @@
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { delayNode, injectNode, mapNode, mergeNode, switchNode } from "../src/index.ts";
-import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "@effect-flow/core";
-import type { FlowLoadError } from "@effect-flow/core";
+import {
+  FlowEngineService,
+  FlowPersistence,
+  layerInMemoryPersistence,
+  layerFlowEngine,
+} from "@effect-flow/core";
+import type { FlowLoadError, NodeOutput } from "@effect-flow/core";
 
 const run = (
   effect: (
     engine: typeof FlowEngineService.Service,
   ) => Effect.Effect<unknown, FlowLoadError, never>,
-) => runWithAdapter(InMemoryFlowPersistence(), effect);
+) => runWithAdapter(layerInMemoryPersistence, effect);
 
 const runWithAdapter = (
-  adapter: ReturnType<typeof InMemoryFlowPersistence>,
+  persistence: Layer.Layer<FlowPersistence>,
   effect: (
     engine: typeof FlowEngineService.Service,
   ) => Effect.Effect<unknown, FlowLoadError, never>,
@@ -23,7 +28,7 @@ const runWithAdapter = (
         return (yield* effect(engine)) as void;
       }),
       layerFlowEngine({
-        adapter,
+        persistence,
         declarations: [injectNode, mapNode, switchNode, mergeNode, delayNode],
       }),
     ),
@@ -245,15 +250,18 @@ test("delay output recorded after suspension completes", () =>
 test("a delayed branch does not stall sibling branches (per-message progress)", async () => {
   const started = Date.now();
   const timeline: Array<{ key: string; body: unknown; at: number }> = [];
-  const backing = InMemoryFlowPersistence();
-  const stampingAdapter: typeof backing = {
-    recordOutput: (output) =>
-      Effect.suspend(() => {
-        timeline.push({ key: output.nodeId, body: output.message.body, at: Date.now() });
-        return backing.recordOutput(output);
-      }),
-    getRun: backing.getRun,
-  };
+  const stampingPersistence = Layer.sync(FlowPersistence, () => {
+    const outputs: Array<NodeOutput> = [];
+    return {
+      recordOutput: (output) =>
+        Effect.sync(() => {
+          timeline.push({ key: output.nodeId, body: output.message.body, at: Date.now() });
+          outputs.push(output);
+        }),
+      getRun: (runId) =>
+        Effect.sync(() => (outputs.length ? Option.some({ runId, outputs }) : Option.none())),
+    };
+  });
   const flowJson = {
     flowVersion: "1",
     nodes: [
@@ -268,7 +276,7 @@ test("a delayed branch does not stall sibling branches (per-message progress)", 
       { source: "pause", target: "sink" },
     ],
   };
-  await runWithAdapter(stampingAdapter, (engine) =>
+  await runWithAdapter(stampingPersistence, (engine) =>
     Effect.gen(function* () {
       const loaded = yield* engine.loadFlow(flowJson);
       yield* engine.startRun(loaded);

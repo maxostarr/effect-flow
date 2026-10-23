@@ -6,7 +6,8 @@ import * as WorkflowEngineModule from "effect/workflow/WorkflowEngine";
 import { injectNode, mapNode, debugNode, delayNode, mergeNode } from "@effect-flow/nodes-basic";
 import {
   FlowEngineService,
-  InMemoryFlowPersistence,
+  FlowPersistence,
+  layerInMemoryPersistence,
   layerFlowEngine,
   backoffMs,
   DEAD_LETTER_PORT,
@@ -27,7 +28,7 @@ const run = (
         return (yield* effect(engine)) as void;
       }),
       layerFlowEngine({
-        adapter: InMemoryFlowPersistence(),
+        persistence: layerInMemoryPersistence,
         declarations: [injectNode, mapNode, debugNode],
       }),
     ),
@@ -131,7 +132,7 @@ test("core runs flows with host-authored declarations alone (no basic nodes regi
         return record.outputs.filter((out) => out.nodeId === "c");
       }),
       layerFlowEngine({
-        adapter: InMemoryFlowPersistence(),
+        persistence: layerInMemoryPersistence,
         declarations: [triggerNode, counterNode],
       }),
     ),
@@ -140,16 +141,28 @@ test("core runs flows with host-authored declarations alone (no basic nodes regi
   expect(result[0]!.message.body).toBe("ping");
 });
 
-test("persistence adapter records run outputs behind in-memory implementation", () =>
-  run((engine) =>
-    Effect.gen(function* () {
-      const loaded = yield* engine.loadFlow(sampleFlow);
-      const record = yield* engine.startRun(loaded);
-      const stored = yield* engine.adapter.getRun(record.runId);
-      expect(stored._tag).toBe("Some");
-      expect((stored as unknown as { value: { outputs: unknown[] } }).value.outputs.length).toBe(3);
-    }),
-  ));
+test("persistence layer records run outputs", async () => {
+  const outputs = await Effect.runPromise(
+    Effect.provide(
+      Effect.gen(function* () {
+        const engine = yield* FlowEngineService;
+        const persistence = yield* FlowPersistence;
+        const loaded = yield* engine.loadFlow(sampleFlow);
+        const record = yield* engine.startRun(loaded);
+        const stored = yield* persistence.getRun(record.runId);
+        return Option.getOrThrow(stored).outputs.length;
+      }),
+      Layer.provideMerge(
+        layerFlowEngine({
+          persistence: layerInMemoryPersistence,
+          declarations: [injectNode, mapNode, debugNode],
+        }),
+        layerInMemoryPersistence,
+      ),
+    ),
+  );
+  expect(outputs).toBe(3);
+});
 
 class NetworkError extends Schema.TaggedError<NetworkError>()("NetworkError", {}) {}
 const makeFlakyNode = (attemptCounter: { count: number }) =>
@@ -166,7 +179,7 @@ const makeFlakyNode = (attemptCounter: { count: number }) =>
 
 const retryEngineLayer = (extra: NodeDeclaration<any>[]) =>
   layerFlowEngine({
-    adapter: InMemoryFlowPersistence(),
+    persistence: layerInMemoryPersistence,
     declarations: [injectNode, debugNode, ...extra],
   });
 
@@ -418,7 +431,7 @@ describe("per-node serialization opt-in", () => {
           return yield* engine.startRun(loaded);
         }),
         layerFlowEngine({
-          adapter: InMemoryFlowPersistence(),
+          persistence: layerInMemoryPersistence,
           declarations: [injectNode, gateNode, decl],
         }),
       ),
@@ -473,7 +486,7 @@ describe("per-node serialization opt-in", () => {
           return yield* engine.loadFlow(gateFlow({ invocations: "bananas" }, 1));
         }),
         layerFlowEngine({
-          adapter: InMemoryFlowPersistence(),
+          persistence: layerInMemoryPersistence,
           declarations: [injectNode, gateNode],
         }),
       ),
@@ -544,7 +557,7 @@ test("injected WorkflowEngine layer backs Runs end to end", async () => {
         wires: [{ source: "n1", target: "n2" }],
       }),
       layerFlowEngine({
-        adapter: InMemoryFlowPersistence(),
+        persistence: layerInMemoryPersistence,
         declarations: [injectNode, flaky],
         workflowEngine: spy.layer,
       }),
@@ -611,7 +624,7 @@ test("delay node sleeps through ctx.sleep even under an injected engine", async 
         return yield* engine.startRun(loaded);
       }),
       layerFlowEngine({
-        adapter: InMemoryFlowPersistence(),
+        persistence: layerInMemoryPersistence,
         declarations: [injectNode, delayNode, mergeNode],
         workflowEngine: spy.layer,
       }),
@@ -623,7 +636,6 @@ test("delay node sleeps through ctx.sleep even under an injected engine", async 
 });
 
 test("recordOutput dedupes on the stable Run/Node/Message key", async () => {
-  const adapter = InMemoryFlowPersistence();
   const output = {
     runId: "run-1",
     nodeId: "n1",
@@ -631,33 +643,40 @@ test("recordOutput dedupes on the stable Run/Node/Message key", async () => {
     emitted: [],
   };
   const record = await Effect.runPromise(
-    Effect.gen(function* () {
-      yield* adapter.recordOutput(output);
-      yield* adapter.recordOutput(output);
-      return Option.getOrThrow(yield* adapter.getRun("run-1"));
-    }),
+    Effect.provide(
+      Effect.gen(function* () {
+        const adapter = yield* FlowPersistence;
+        yield* adapter.recordOutput(output);
+        yield* adapter.recordOutput(output);
+        return Option.getOrThrow(yield* adapter.getRun("run-1"));
+      }),
+      layerInMemoryPersistence,
+    ),
   );
   expect(record.outputs.length).toBe(1);
 });
 
 test("distinct messages at the same node are not collapsed by dedupe", async () => {
-  const adapter = InMemoryFlowPersistence();
   const record = await Effect.runPromise(
-    Effect.gen(function* () {
-      yield* adapter.recordOutput({
-        runId: "run-1",
-        nodeId: "n1",
-        message: { id: "m1", body: 1 as unknown },
-        emitted: [],
-      });
-      yield* adapter.recordOutput({
-        runId: "run-1",
-        nodeId: "n1",
-        message: { id: "m2", body: 2 as unknown },
-        emitted: [],
-      });
-      return Option.getOrThrow(yield* adapter.getRun("run-1"));
-    }),
+    Effect.provide(
+      Effect.gen(function* () {
+        const adapter = yield* FlowPersistence;
+        yield* adapter.recordOutput({
+          runId: "run-1",
+          nodeId: "n1",
+          message: { id: "m1", body: 1 as unknown },
+          emitted: [],
+        });
+        yield* adapter.recordOutput({
+          runId: "run-1",
+          nodeId: "n1",
+          message: { id: "m2", body: 2 as unknown },
+          emitted: [],
+        });
+        return Option.getOrThrow(yield* adapter.getRun("run-1"));
+      }),
+      layerInMemoryPersistence,
+    ),
   );
   expect(record.outputs.length).toBe(2);
 });
@@ -709,7 +728,7 @@ describe("deterministic message IDs", () => {
           return yield* engine.startRun(loaded);
         }),
         layerFlowEngine({
-          adapter: InMemoryFlowPersistence(),
+          persistence: layerInMemoryPersistence,
           declarations: [injectNode, wait, debugNode],
         }),
       ),

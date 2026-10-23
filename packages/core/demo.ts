@@ -3,7 +3,7 @@ import { debugNode, injectNode, mapNode } from "@effect-flow/nodes-basic";
 import {
   defineNode,
   FlowEngineService,
-  InMemoryFlowPersistence,
+  layerInMemoryPersistence,
   layerFlowEngine,
 } from "./src/index.ts";
 import { DEAD_LETTER_PORT } from "./src/schema.ts";
@@ -61,7 +61,7 @@ Effect.runPromise(
   Effect.provide(
     program,
     layerFlowEngine({
-      adapter: InMemoryFlowPersistence(),
+      persistence: layerInMemoryPersistence,
       declarations: [injectNode, flakyMapNode, debugNode],
     }),
   ),
@@ -99,7 +99,7 @@ void Effect.runPromise(
   Effect.provide(
     cycleDemo,
     layerFlowEngine({
-      adapter: InMemoryFlowPersistence(),
+      persistence: layerInMemoryPersistence,
       declarations: [injectNode, mapNode, debugNode],
     }),
   ),

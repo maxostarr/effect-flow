@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Context, Effect, Layer } from "effect";
 import * as Schema from "effect/Schema";
 import { injectNode } from "@effect-flow/nodes-basic";
-import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "../src/index.ts";
+import { FlowEngineService, layerInMemoryPersistence, layerFlowEngine } from "../src/index.ts";
 import { defineNode } from "../src/declaration.ts";
 import type { FlowLoadError } from "../src/engine.ts";
 
@@ -43,7 +43,7 @@ type RunRecord = { outputs: { nodeId: string; emitted: { port: string; body: unk
 
 const engineLayer = (resources?: Layer.Layer<any>) =>
   layerFlowEngine({
-    adapter: InMemoryFlowPersistence(),
+    persistence: layerInMemoryPersistence,
     declarations: [injectNode, greeterNode],
     resources,
   });

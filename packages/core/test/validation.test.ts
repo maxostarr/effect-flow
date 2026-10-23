@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import { injectNode, mapNode, debugNode } from "@effect-flow/nodes-basic";
-import { FlowEngineService, InMemoryFlowPersistence, layerFlowEngine } from "../src/index.ts";
+import { FlowEngineService, layerInMemoryPersistence, layerFlowEngine } from "../src/index.ts";
 import {
   DanglingWireError,
   DuplicateNodeError,
@@ -17,7 +17,7 @@ const load = (flow: unknown) =>
   }).pipe(
     Effect.provide(
       layerFlowEngine({
-        adapter: InMemoryFlowPersistence(),
+        persistence: layerInMemoryPersistence,
         declarations: [injectNode, mapNode, debugNode],
       }),
     ),
