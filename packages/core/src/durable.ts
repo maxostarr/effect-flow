@@ -1,9 +1,9 @@
 import { Crypto, Effect, Layer, Option } from "effect";
 import { SqliteClient } from "@effect/sql-sqlite-bun";
 import { Database } from "bun:sqlite";
-import * as Wf from "effect/unstable/workflow";
-import * as ClusterWorkflowEngine from "effect/unstable/cluster/ClusterWorkflowEngine";
-import * as SingleRunner from "effect/unstable/cluster/SingleRunner";
+import * as Wf from "effect/workflow";
+import * as ClusterWorkflowEngine from "effect/cluster/ClusterWorkflowEngine";
+import * as SingleRunner from "effect/cluster/SingleRunner";
 import type { FlowPersistence, NodeOutput, RunRecord } from "./adapter.ts";
 
 /**
@@ -48,7 +48,9 @@ const CryptoLayer = Layer.succeed(
   Crypto.make({
     randomBytes: (size) => crypto.getRandomValues(new Uint8Array(size)),
     digest: (algorithm, data) =>
-      Effect.promise(async () => new Uint8Array(await crypto.subtle.digest(algorithm, data))),
+      Effect.promise(
+        async () => new Uint8Array(await crypto.subtle.digest(algorithm, new Uint8Array(data))),
+      ),
   }),
 );
 

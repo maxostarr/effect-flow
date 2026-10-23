@@ -6,8 +6,8 @@
   },
   "dependencies": {
     "@effect-flow/core": "workspace:*",
-    "@xyflow/react": "^12.8.6",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "@xyflow/react": "^12.12.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }

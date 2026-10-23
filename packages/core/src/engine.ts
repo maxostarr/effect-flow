@@ -1,6 +1,6 @@
 import { Context, Deferred, Effect, Layer, Option, Result, Schema } from "effect";
-import * as Wf from "effect/unstable/workflow";
-import * as WorkflowEngineModule from "effect/unstable/workflow/WorkflowEngine";
+import * as Wf from "effect/workflow";
+import * as WorkflowEngineModule from "effect/workflow/WorkflowEngine";
 import * as AdapterModule from "./adapter.ts";
 import type { NodeContext, NodeDeclaration } from "./declaration.ts";
 import {

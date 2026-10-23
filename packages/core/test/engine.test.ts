@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Exit, Layer, Option } from "effect";
 import * as Schema from "effect/Schema";
-import * as Wf from "effect/unstable/workflow";
-import * as WorkflowEngineModule from "effect/unstable/workflow/WorkflowEngine";
+import * as Wf from "effect/workflow";
+import * as WorkflowEngineModule from "effect/workflow/WorkflowEngine";
 import { injectNode, mapNode, debugNode, delayNode, mergeNode } from "@effect-flow/nodes-basic";
 import {
   FlowEngineService,
