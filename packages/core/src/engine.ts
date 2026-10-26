@@ -71,6 +71,14 @@ export interface FlowEngine {
     flow: LoadedFlow,
     options?: StartRunOptions,
   ) => Effect.Effect<AdapterModule.RunRecord>;
+  /**
+   * Resumes every Run the registry still marks `running` (for example, Runs
+   * interrupted by a crash or a graceful shutdown) and returns their records.
+   * Completed and cancelled Runs are not re-executed.
+   */
+  readonly recoverRuns: () => Effect.Effect<ReadonlyArray<AdapterModule.RunRecord>>;
+  /** Interrupts a Run and marks it `cancelled`. A cancelled Run is never resumed. */
+  readonly cancel: (runId: string) => Effect.Effect<void>;
 }
 
 export class FlowEngineService extends Context.Service<FlowEngineService, FlowEngine>()(
@@ -432,9 +440,24 @@ const makeEngineService = (options: EngineOptions) =>
           { id: `${payload.runId}/${binding.node.id}`, body: undefined as unknown },
         ]);
       yield* runFlowMessages({ loaded, adapter, service, runId: payload.runId }, frontier);
+      yield* adapter.transitionRun(payload.runId, "running", "completed");
     });
 
     yield* workflowEngine.register(runWorkflow, (payload, _executionId) => handler(payload));
+
+    const activeRuns = new Map<string, SchemaModule.FlowSchema>();
+
+    const executeRun = (runId: string, flow: SchemaModule.FlowSchema) =>
+      Effect.suspend(() => {
+        activeRuns.set(runId, flow);
+        return runWorkflow
+          .execute({ runId, flow })
+          .pipe(
+            Effect.scoped,
+            Effect.provideService(Wf.WorkflowEngine.WorkflowEngine, workflowEngine),
+            Effect.ensuring(Effect.sync(() => activeRuns.delete(runId))),
+          );
+      });
 
     const loadFlow: FlowEngine["loadFlow"] = (json) =>
       SchemaModule.parseFlow(json).pipe(
@@ -448,22 +471,58 @@ const makeEngineService = (options: EngineOptions) =>
     const startRun: FlowEngine["startRun"] = (flow, options) =>
       Effect.gen(function* () {
         const runId = options?.runId ?? `run-${yield* randomHex(cryptoService, 16)}`;
-        yield* runWorkflow
-          .execute({ runId, flow: flow.flow })
-          .pipe(
-            Effect.scoped,
-            Effect.provideService(Wf.WorkflowEngine.WorkflowEngine, workflowEngine),
-          );
+        yield* adapter.registerRun({
+          runId,
+          flowHash: yield* hashFlow(cryptoService, flow.flow),
+          flow: flow.flow,
+        });
+        yield* executeRun(runId, flow.flow);
         const record = yield* adapter.getRun(runId);
         return Option.getOrThrow(record);
       });
 
-    return { loadFlow, startRun } satisfies FlowEngine;
+    const recoverRuns: FlowEngine["recoverRuns"] = () =>
+      Effect.gen(function* () {
+        const pending = yield* adapter.listRuns("running");
+        return yield* Effect.forEach(
+          pending,
+          (run) =>
+            Effect.gen(function* () {
+              const flow = yield* Schema.decodeUnknownEffect(SchemaModule.Flow)(run.flow).pipe(
+                Effect.orDie,
+              );
+              yield* executeRun(run.runId, flow);
+              return Option.getOrThrow(yield* adapter.getRun(run.runId));
+            }),
+          { concurrency: "unbounded" },
+        );
+      });
+
+    const cancel: FlowEngine["cancel"] = (runId) =>
+      Effect.gen(function* () {
+        const moved = yield* adapter.transitionRun(runId, "running", "cancelled");
+        const flow = activeRuns.get(runId);
+        if (moved && flow) {
+          const executionId = yield* runWorkflow.executionId({ runId, flow });
+          yield* workflowEngine.interruptUnsafe(runWorkflow, executionId);
+        }
+      });
+
+    return { loadFlow, startRun, recoverRuns, cancel } satisfies FlowEngine;
   });
 
+const toHex = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
 const randomHex = (cryptoService: Crypto.Crypto, bytes: number) =>
-  Effect.map(cryptoService.randomBytes(bytes).pipe(Effect.orDie), (buf) =>
-    Array.from(buf, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  Effect.map(cryptoService.randomBytes(bytes).pipe(Effect.orDie), toHex);
+
+const hashFlow = (cryptoService: Crypto.Crypto, flow: SchemaModule.FlowSchema) =>
+  Effect.map(
+    cryptoService
+      .digest("SHA-256", new TextEncoder().encode(JSON.stringify(flow)))
+      .pipe(Effect.orDie),
+    toHex,
   );
 
 export const layerFlowEngine = (options: EngineOptions): Layer.Layer<FlowEngineService> =>

@@ -29,7 +29,7 @@ const flowJson = {
   nodes: [
     { id: "n1", type: "inject", position: { x: 0, y: 0 }, config: { body: 21 } },
     { id: "n2", type: "tap", position: { x: 100, y: 0 }, config: { mult: 2 } },
-    { id: "n3", type: "delay", position: { x: 100, y: 60 }, config: { duration: 1500 } },
+    { id: "n3", type: "delay", position: { x: 100, y: 60 }, config: { duration: 800 } },
     { id: "n4", type: "debug", position: { x: 200, y: 0 }, config: {} },
     { id: "n5", type: "tap", position: { x: 200, y: 60 }, config: { mult: 1 } },
   ],
@@ -46,7 +46,7 @@ const program = Effect.gen(function* () {
   const loaded = yield* engine.loadFlow(flowJson);
   if (mode === "crash") {
     yield* Effect.forkChild(engine.startRun(loaded, { runId }));
-    yield* Effect.sleep("400 millis");
+    yield* Effect.sleep("200 millis");
     process.exit(0);
   }
   const record = yield* engine.startRun(loaded, { runId });

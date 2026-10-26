@@ -12,6 +12,8 @@ export {
   layerInMemoryPersistence,
   type NodeOutput,
   type RunRecord,
+  type RunRegistration,
+  type RunStatus,
 } from "./adapter.ts";
 export { layerSqlFlowPersistence } from "./sql-persistence.ts";
 export { layerWebCrypto } from "./crypto.ts";

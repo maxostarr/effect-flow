@@ -11,6 +11,12 @@ import {
 import { layerSqliteSqlClient } from "../src/sqlite.ts";
 import type { NodeOutput } from "../src/adapter.ts";
 
+const noRegistry = {
+  registerRun: () => Effect.void,
+  transitionRun: () => Effect.succeed(false),
+  listRuns: () => Effect.succeed([]),
+};
+
 const dbFile = () => `/tmp/opencode/persist-${crypto.randomUUID()}.db`;
 
 const output = (runId: string, nodeId: string, messageId: string, body?: unknown): NodeOutput => ({
@@ -109,6 +115,7 @@ test("engine writes through a host-supplied FlowPersistence layer", async () => 
   const hostPersistence = Layer.sync(FlowPersistence, () => {
     const outputs: Array<NodeOutput> = [];
     return {
+      ...noRegistry,
       recordOutput: (out) =>
         Effect.sync(() => {
           writes.push(out.nodeId);
@@ -147,7 +154,7 @@ test("run IDs come from the host-supplied Crypto layer", async () => {
     Crypto.Crypto,
     Crypto.make({
       randomBytes: (size) => new Uint8Array(size).fill(0xab),
-      digest: () => Effect.die("digest unused in this test"),
+      digest: (_algorithm, data) => Effect.succeed(new Uint8Array(data.length).fill(0xcd)),
     }),
   );
   const flow = {
@@ -165,6 +172,7 @@ test("run IDs come from the host-supplied Crypto layer", async () => {
         persistence: Layer.sync(FlowPersistence, () => {
           const outputs: Array<NodeOutput> = [];
           return {
+            ...noRegistry,
             recordOutput: (out) => Effect.sync(() => void outputs.push(out)),
             getRun: (runId) =>
               Effect.sync(() => (outputs.length ? Option.some({ runId, outputs }) : Option.none())),
