@@ -1,0 +1,11 @@
+{
+  "name": "@effect-flow/nodes-basic",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@effect-flow/core": "workspace:*",
+    "effect": "^4.0.0-rc.113"
+  }
+}

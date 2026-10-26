@@ -103,3 +103,17 @@ bun --hot ./index.ts
 ```
 
 For more information, read the Bun API docs in `node_modules/bun-types/docs/**.mdx`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `maxostarr/effect-flow` (via `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five canonical triage role labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
